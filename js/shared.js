@@ -17,4 +17,6 @@ App.easeOutQuint = function(t) { return 1 - Math.pow(1 - t, 5); };
 App.smoothstep = function(a, b, t) { const x = Math.max(0, Math.min(1, (t-a)/(b-a))); return x*x*(3-2*x); };
 App.randomColor = function() { return App.STRING_COLORS[Math.floor(Math.random() * App.STRING_COLORS.length)]; };
 
+App.baseFont = function(W, H) { return Math.min(W * App.Config.FONT_BASE_W, H * App.Config.FONT_BASE_H); };
+
 App.NAME_LETTERS = ['R', 'a', 'a', 'g', 'a'];

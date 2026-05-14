@@ -194,7 +194,7 @@ App.Footer = (function() {
         const envelope = state === STATE.COMPLETE ? textP : Math.min(1, entryTimer / TIMING.envelopeDuration) * textP;
 
         const DPR = App.DPR;
-        const footerSize = fontSize * 0.18;
+        const footerSize = fontSize * App.Config.FONT_CAPTION;
         const footerY = H - fontSize * 0.6;
         const font = `200 ${footerSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
         ctx.font = font;
@@ -293,7 +293,7 @@ App.Footer = (function() {
     }
 
     function getTargets(fontSize, cx, H) {
-        const footerSize = fontSize * 0.18;
+        const footerSize = fontSize * App.Config.FONT_CAPTION;
         const footerY = H - fontSize * 0.6;
         const font = `200 ${footerSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
         if (!widths) {

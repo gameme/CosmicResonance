@@ -1,3 +1,9 @@
+// Debug logger — resolved once after config loads. No-op in production.
+window.App = window.App || {};
+App.dbg = function() {};
+App.dbgw = function() {};
+App.dbge = function() {};
+
 window._showError = function(msg, stack) {
     let el = document.getElementById('error-overlay');
     if (!el) {
@@ -10,9 +16,49 @@ window._showError = function(msg, stack) {
 };
 
 window.onerror = function(msg, src, line, col, err) {
+    if (window._errorLog) window._errorLog.push('[ERROR] ' + msg + ' (' + src + ':' + line + ')');
     window._showError(msg + ' (' + src + ':' + line + ':' + col + ')', err && err.stack);
 };
 
 window.addEventListener('unhandledrejection', function(e) {
+    if (window._errorLog) window._errorLog.push('[REJECT] ' + e.reason);
     window._showError('Unhandled rejection: ' + e.reason, e.reason && e.reason.stack);
 });
+
+// Debug logging and remote beacon — only active when Config.DEBUG is true
+(function() {
+    window.addEventListener('DOMContentLoaded', function() {
+        if (!window.App || !App.Config || !App.Config.DEBUG) return;
+
+        window._errorLog = [];
+        var orig = { log: console.log, warn: console.warn, error: console.error };
+        var MAX_ENTRIES = 100;
+
+        function capture(level, args) {
+            var msg = '[' + level + '] ' + Array.from(args).map(function(a) {
+                try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+                catch(e) { return String(a); }
+            }).join(' ');
+            window._errorLog.push(msg);
+            if (window._errorLog.length > MAX_ENTRIES) window._errorLog.shift();
+        }
+
+        console.log = function() { capture('LOG', arguments); orig.log.apply(console, arguments); };
+        console.warn = function() { capture('WARN', arguments); orig.warn.apply(console, arguments); };
+        console.error = function() { capture('ERROR', arguments); orig.error.apply(console, arguments); };
+
+        // Re-bind after override so dbg() also feeds the beacon
+        App.dbg = console.log.bind(console);
+        App.dbgw = console.warn.bind(console);
+        App.dbge = console.error.bind(console);
+
+        setInterval(function() {
+            if (window._errorLog.length === 0) return;
+            var payload = window._errorLog.join('\n');
+            window._errorLog = [];
+            try { fetch('/log', { method: 'POST', body: payload, keepalive: true }); } catch(e) {}
+        }, 3000);
+
+        App.dbg('BEACON_INIT: page loaded, DPR=' + window.devicePixelRatio + ', screen=' + screen.width + 'x' + screen.height);
+    });
+})();

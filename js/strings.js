@@ -56,8 +56,9 @@ App.Strings = {
             const dist = Math.abs(ptr.x - stringX);
             const hit = dist < C.STRING_HIT_RADIUS * DPR || crossedOver;
 
-            // Crossing to the other side resets the lock — allows re-strum without leaving radius
-            if (crossedOver) this.locks.delete(lockKey);
+            // Crossing resets lock only if the POINTER moved (not just the string oscillating)
+            const pointerMoved = Math.abs(ptr.x - ptr.prevX) > 2 * DPR;
+            if (crossedOver && pointerMoved) this.locks.delete(lockKey);
 
             if (hit) {
                 if (this.locks.has(lockKey)) continue;
@@ -77,6 +78,7 @@ App.Strings = {
                 // Feed strum into wave model — amplitude proportional to velocity
                 const normalizedY = ptr.y / H;
                 const normalizedSpeed = Math.min(1, (speed / DPR - C.STRING_PLUCK_MIN_SPEED) / (C.STRING_PLUCK_MAX_FORCE - C.STRING_PLUCK_MIN_SPEED));
+                App.dbg('STRUM: string=' + stringIdx + ' y=' + normalizedY.toFixed(2) + ' speed=' + normalizedSpeed.toFixed(2));
                 App.WaveModels.strum(stringIdx, normalizedY, normalizedSpeed);
                 App.Audio.playNote(normalizedY, normalizedSpeed, stringIdx);
 

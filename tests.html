@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html>
-<head><title>Udbhava - Tests</title></head>
+<head><title>Cosmic Resonance - Tests</title></head>
 <body>
 <pre id="output"></pre>
 <script>
@@ -346,7 +346,7 @@ assert(waveFalloff(0.1, 0.08) === 0, 'Falloff: beyond threshold = 0');
 assert(waveFalloff(0.04, 0.08) > 0.5, 'Falloff: halfway point > 0.5');
 assert(waveFalloff(-0.04, 0.08) > 0.5, 'Falloff: symmetric for negative dist');
 
-// --- Glow decay: spread grows while glow fades ---
+// --- Glow decay: spread grows while glow fades (DPR=1 assumption, tests math in isolation) ---
 function simulateGlow(frames, glowDecay, glowSpeed) {
     let glow = 1, spread = 0;
     for (let i = 0; i < frames; i++) {
@@ -362,9 +362,10 @@ assert(g1.spread === 20, 'Glow: one frame spread');
 const g2 = simulateGlow(100, 0.95, 20);
 assert(g2.glow === 0, 'Glow: fully faded after many frames');
 assert(g2.spread > 0, 'Glow: spread accumulated before fade');
+// Invariant: spread grows linearly while glow remains above threshold
 const g3 = simulateGlow(30, 0.95, 20);
-assert(g3.glow > 0, 'Glow: still active at 30 frames');
-assert(g3.spread === 30 * 20, 'Glow: spread grows linearly while active');
+assert(g3.glow > 0.01, 'Glow: still above threshold at 30 frames');
+assert(g3.spread === 30 * 20, 'Glow: spread linear while active (DPR=1)');
 
 // --- Outward push: negative pull direction ---
 function computeOutwardForce(px, py, cx, cy, pullStrength) {
@@ -394,6 +395,91 @@ assertClose(normalizeSpeed(10, 2, 5, 40), 0, 'NormSpeed: at min threshold → 0'
 assertClose(normalizeSpeed(80, 2, 5, 40), 1, 'NormSpeed: at max → capped to 1');
 assertClose(normalizeSpeed(200, 2, 5, 40), 1, 'NormSpeed: beyond max → still 1');
 assert(normalizeSpeed(45, 2, 5, 40) > 0 && normalizeSpeed(45, 2, 5, 40) < 1, 'NormSpeed: mid-range → between 0 and 1');
+
+// --- Audio: playNote dispatches based on melodyPlaying state ---
+function audioDispatch(melodyPlaying) {
+    return melodyPlaying ? 'shimmer' : 'base';
+}
+assert(audioDispatch(false) === 'base', 'AudioDispatch: pre-reveal → base note');
+assert(audioDispatch(true) === 'shimmer', 'AudioDispatch: post-reveal → shimmer note');
+
+// --- Audio: swara index from position (shared by playNote and playLetterChime) ---
+function swaraFreq(normalizedY, base, ratios) {
+    const idx = Math.min(ratios.length - 1, Math.floor(normalizedY * ratios.length));
+    return base * ratios[idx];
+}
+const RATIOS = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2];
+assertClose(swaraFreq(0, 240, RATIOS), 240, 'SwaraFreq: top → Sa');
+assertClose(swaraFreq(0.99, 240, RATIOS), 240 * 2, 'SwaraFreq: bottom → Sa\'');
+assertClose(swaraFreq(0.5, 240, RATIOS), 240 * 3/2, 'SwaraFreq: middle → Pa', 0.01);
+
+// --- Audio: compression guard prevents re-entry ---
+function compressionGuard(active) {
+    if (active) return false;
+    return true;
+}
+assert(compressionGuard(false) === true, 'CompressionGuard: not active → starts');
+assert(compressionGuard(true) === false, 'CompressionGuard: already active → blocks');
+
+// --- Audio: harmonic count progression ---
+function harmonicCount(compression, totalHarmonics) {
+    return Math.floor(compression * totalHarmonics);
+}
+assert(harmonicCount(0, 10) === 0, 'HarmonicCount: zero compression → 0 harmonics');
+assert(harmonicCount(0.5, 10) === 5, 'HarmonicCount: half compression → 5 harmonics');
+assert(harmonicCount(1.0, 10) === 10, 'HarmonicCount: full compression → all 10');
+assert(harmonicCount(0.09, 10) === 0, 'HarmonicCount: below first threshold → 0');
+assert(harmonicCount(0.1, 10) === 1, 'HarmonicCount: at first threshold → 1');
+
+// --- WaveModel: strum caps at 16 waves ---
+function simulateStrumCap(strumCount, maxWaves) {
+    let waves = [];
+    for (let i = 0; i < strumCount; i++) {
+        waves.push({ id: i * 2 }, { id: i * 2 + 1 });
+        if (waves.length > maxWaves) waves.splice(0, 2);
+    }
+    return waves.length;
+}
+assert(simulateStrumCap(5, 16) === 10, 'StrumCap: 5 strums → 10 waves');
+assert(simulateStrumCap(8, 16) === 16, 'StrumCap: 8 strums → 16 waves (at cap)');
+assert(simulateStrumCap(10, 16) === 16, 'StrumCap: 10 strums → still 16 (capped)');
+assert(simulateStrumCap(20, 16) === 16, 'StrumCap: 20 strums → still 16');
+
+// --- WaveModel: boundary reflection ---
+function simulateWaveBounce(startPos, dir, speed, frames) {
+    let pos = startPos;
+    for (let i = 0; i < frames; i++) {
+        pos += dir * speed;
+        if (pos > 1.0) { pos = 2.0 - pos; dir *= -1; }
+        else if (pos < 0.0) { pos = -pos; dir *= -1; }
+    }
+    return { pos, dir };
+}
+const wb1 = simulateWaveBounce(0.9, 1, 0.05, 5);
+assert(wb1.pos >= 0 && wb1.pos <= 1, 'WaveBounce: stays in [0,1] after crossing upper bound');
+assert(wb1.dir === -1, 'WaveBounce: direction flipped after upper bounce');
+const wb2 = simulateWaveBounce(0.1, -1, 0.05, 5);
+assert(wb2.pos >= 0 && wb2.pos <= 1, 'WaveBounce: stays in [0,1] after crossing lower bound');
+assert(wb2.dir === 1, 'WaveBounce: direction flipped after lower bounce');
+const wb3 = simulateWaveBounce(0.5, 1, 0.01, 10);
+assert(wb3.pos >= 0 && wb3.pos <= 1, 'WaveBounce: mid-string stays in bounds');
+assert(wb3.dir === 1, 'WaveBounce: no bounce needed in mid-range');
+
+// --- WaveModel: wave pruning at low amplitude ---
+function simulateWavePrune(initialAmp, decayRate, frames) {
+    let amp = initialAmp;
+    for (let i = 0; i < frames; i++) {
+        amp *= decayRate;
+        if (amp < 0.001) return { pruned: true, frame: i + 1 };
+    }
+    return { pruned: false, frame: frames };
+}
+const wp1 = simulateWavePrune(0.015, 0.997, 2000);
+assert(wp1.pruned === true, 'WavePrune: wave eventually pruned');
+assert(wp1.frame < 1500, 'WavePrune: pruned within reasonable frame count');
+const wp2 = simulateWavePrune(0.0005, 0.997, 10);
+assert(wp2.pruned === true, 'WavePrune: very quiet wave pruned immediately');
+assert(wp2.frame === 1, 'WavePrune: below threshold on first frame');
 
 // --- Output ---
 const output = document.getElementById('output');

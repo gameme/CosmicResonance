@@ -43,13 +43,18 @@ App.Audio = {
         this.melodyAudio.preload = 'auto';
     },
 
-    async init(muteBtn) {
-        if (this.started) return;
+    init(muteBtn) {
+        if (this.started) { App.dbg('AUDIO: init skipped — already started'); return; }
         this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        App.dbg('AUDIO: AudioContext created, state=' + this.audioCtx.state);
 
-        if (this.audioCtx.state === 'suspended') {
-            await this.audioCtx.resume();
-        }
+        // Resume immediately (synchronous call inside gesture handler)
+        this.audioCtx.resume();
+        App.dbg('AUDIO: resume called, state=' + this.audioCtx.state);
+
+        this.audioCtx.addEventListener('statechange', function() {
+            App.dbg('AUDIO: state changed to ' + this.state);
+        }.bind(this.audioCtx));
 
         this.masterGain = this.audioCtx.createGain();
         this.masterGain.gain.value = 1.0;
@@ -72,19 +77,32 @@ App.Audio = {
         melodySource.connect(this.melodyGain);
         this.melodyGain.connect(this.masterGain);
 
-        this.droneAudio.play();
-        // this.melodyAudio.play(); // temporarily disabled to hear synth effects
+        this.droneAudio.play().then(function() {
+            App.dbg('AUDIO: drone playing');
+        }).catch(function(e) {
+            App.dbge('AUDIO: drone play FAILED — ' + e.message);
+        });
+
+        // Pre-start melody silently (iOS requires media play inside gesture)
+        this.melodyAudio.play().then(function() {
+            App.dbg('AUDIO: melody pre-started (silent)');
+        }).catch(function(e) {
+            App.dbge('AUDIO: melody pre-start FAILED — ' + e.message);
+        });
 
         this.started = true;
+        App.dbg('AUDIO: initialized, sampleRate=' + this.audioCtx.sampleRate + ' state=' + this.audioCtx.state);
         if (muteBtn) muteBtn.classList.add('visible');
     },
 
-    // Per-string octave offsets (low to high) and timbre brightness
     STRING_OCTAVES: [0.5, 0.75, 1, 1.5],
     STRING_BRIGHTNESS: [0.05, 0.15, 0.3, 0.5],
 
     playNote(normalizedY, velocity, stringIdx) {
-        if (!this.started || this.muted) return;
+        if (!this.started || this.muted) {
+            App.dbg('AUDIO: playNote blocked — started=' + this.started + ' muted=' + this.muted + ' ctxState=' + (this.audioCtx ? this.audioCtx.state : 'none'));
+            return;
+        }
         if (this._melodyPlaying) {
             this._playShimmerNote(normalizedY, velocity, stringIdx);
         } else {
@@ -207,12 +225,15 @@ App.Audio = {
 
     // Letter reveal — percussive impact + sustained drone layer
     playLetterChime(letterIndex) {
-        if (!this.started || this.muted) return;
+        if (!this.started || this.muted) {
+            App.dbg('AUDIO: playLetterChime blocked — started=' + this.started + ' muted=' + this.muted);
+            return;
+        }
+        App.dbg('AUDIO: playLetterChime(' + letterIndex + ') ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
 
-        const ratios = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2];
-        const freq = 220 * ratios[Math.min(letterIndex, 7)];
+        const freq = 220 * this.SWARA_RATIOS[Math.min(letterIndex, 7)];
 
         // Sub thump (gets deeper with each letter)
         const subFreq = 60 - letterIndex * 5;
@@ -281,14 +302,17 @@ App.Audio = {
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
         this._compressionActive = true;
+        App.dbg('AUDIO: compression build started');
 
-        // Rising noise sweep
-        const bufferSize = ctx.sampleRate * 8;
-        const noiseBuf = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-        const nd = noiseBuf.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) nd[i] = Math.random() * 2 - 1;
+        // Rising noise sweep (reuse cached buffer)
+        if (!this._cachedNoiseBuf) {
+            const bufferSize = ctx.sampleRate * 8;
+            this._cachedNoiseBuf = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+            const nd = this._cachedNoiseBuf.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) nd[i] = Math.random() * 2 - 1;
+        }
         this._noiseSource = ctx.createBufferSource();
-        this._noiseSource.buffer = noiseBuf;
+        this._noiseSource.buffer = this._cachedNoiseBuf;
         this._noiseSource.loop = true;
 
         this._noiseBP = ctx.createBiquadFilter();
@@ -365,7 +389,7 @@ App.Audio = {
             osc.connect(g);
             g.connect(this._harmonicGain);
             osc.start(t);
-            this._harmonicOscs.push({ osc, gain: g });
+            this._harmonicOscs.push({ osc, gain: g, baseDetune: i * i * 3 });
             this._harmonicsSpawned++;
         }
 
@@ -376,12 +400,13 @@ App.Audio = {
         // Pitch bend all harmonics upward as compression approaches 1
         const bend = compression * compression * compression * 200;
         for (const h of this._harmonicOscs) {
-            h.osc.detune.setTargetAtTime(h.osc.detune.value + bend, t, 0.2);
+            h.osc.detune.setTargetAtTime(h.baseDetune + bend, t, 0.2);
         }
     },
 
     stopCompression() {
         if (!this._compressionActive) return;
+        App.dbg('AUDIO: stopCompression');
         this._compressionActive = false;
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
@@ -404,7 +429,8 @@ App.Audio = {
 
     // Supernova burst — layered impact: sub boom + crack + shimmer
     playBurst() {
-        if (!this.started || this.muted) return;
+        if (!this.started || this.muted) { App.dbg('AUDIO: playBurst blocked'); return; }
+        App.dbg('AUDIO: playBurst — ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
 
@@ -462,7 +488,8 @@ App.Audio = {
 
     // Singing bowl — peaceful resolution after burst
     playSingingBowl() {
-        if (!this.started || this.muted) return;
+        if (!this.started || this.muted) { App.dbg('AUDIO: playSingingBowl blocked'); return; }
+        App.dbg('AUDIO: playSingingBowl — ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
 
@@ -486,9 +513,9 @@ App.Audio = {
 
     // Start melody playback after supernova
     startMelody() {
-        if (!this.started || this.muted) return;
+        if (!this.started || this.muted) { App.dbg('AUDIO: startMelody blocked'); return; }
+        App.dbg('AUDIO: startMelody — ctxState=' + this.audioCtx.state);
         this.melodyAudio.currentTime = 0;
-        this.melodyAudio.play();
         const t = this.audioCtx.currentTime;
         this.melodyGain.gain.setValueAtTime(0, t);
         this.melodyGain.gain.linearRampToValueAtTime(0.6, t + 2.0);
@@ -509,7 +536,7 @@ App.Audio = {
         this.droneGain.gain.setTargetAtTime(droneVol, t, 0.3);
         const filterFreq = C.DRONE_FILTER_MIN + progress * (C.DRONE_FILTER_MAX - C.DRONE_FILTER_MIN);
         this.droneFilter.frequency.setTargetAtTime(filterFreq, t, 0.3);
-        const melodyVol = Math.max(0, Math.min(0.8, (progress - C.MELODY_FADE_START) / (C.MELODY_FADE_END - C.MELODY_FADE_START)));
+        const melodyVol = this._melodyPlaying ? Math.max(0, Math.min(0.8, (progress - C.MELODY_FADE_START) / (C.MELODY_FADE_END - C.MELODY_FADE_START))) : 0;
         this.melodyGain.gain.setTargetAtTime(melodyVol, t, 0.5);
     },
 

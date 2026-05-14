@@ -2,6 +2,7 @@ window.App = window.App || {};
 
 App.WaveModels = {
     states: null,
+    _noiseBuf: null,
 
     init() {
         this.states = [];
@@ -13,11 +14,10 @@ App.WaveModels = {
     strum(stringIdx, normalizedY, intensity) {
         const state = this.states[stringIdx];
         const baseFreq = 6 + Math.random() * 4;
-        // Amplitude scales with velocity: gentle strum = subtle wave, fast strum = strong wave
         const amp = intensity * 0.015;
         state.waves.push(
-            { origin: normalizedY, age: 0, amp, freq: baseFreq, dir: 1, speed: 0.012 + intensity * 0.008, pos: normalizedY },
-            { origin: normalizedY, age: 0, amp, freq: baseFreq, dir: -1, speed: 0.012 + intensity * 0.008, pos: normalizedY }
+            { age: 0, amp, freq: baseFreq, dir: 1, speed: 0.012 + intensity * 0.008, pos: normalizedY },
+            { age: 0, amp, freq: baseFreq, dir: -1, speed: 0.012 + intensity * 0.008, pos: normalizedY }
         );
         if (state.waves.length > 16) state.waves.splice(0, 2);
     },
@@ -28,15 +28,16 @@ App.WaveModels = {
                 const w = state.waves[i];
                 w.age += 1;
                 w.amp *= 0.997;
-                // Pre-compute position and phase for this frame
-                w.pos = w.origin + w.dir * w.speed * w.age;
-                if (w.pos > 1.0 || w.pos < 0.0) w.dir *= -1;
-                w.sinPhase = Math.sin(w.age * 0.3);
+                w.pos += w.dir * w.speed;
+                if (w.pos > 1.0) { w.pos = 2.0 - w.pos; w.dir *= -1; }
+                else if (w.pos < 0.0) { w.pos = -w.pos; w.dir *= -1; }
                 if (w.amp < 0.001) state.waves.splice(i, 1);
             }
         }
     },
 
+    // t: normalized position [0,1] along string; time: animation clock (seconds);
+    // freq: spatial frequency multiplier; phase: offset (radians); baseAmplitude: pixels
     getDisplacement(stringIdx, t, time, baseAmplitude, freq, phase) {
         const state = this.states[stringIdx];
         const envelope = Math.sin(t * Math.PI);
@@ -45,31 +46,13 @@ App.WaveModels = {
         for (let i = 0, len = state.waves.length; i < len; i++) {
             const w = state.waves[i];
             const dist = t - w.pos;
-            // Tight pulse — narrow width like a real string perturbation
             if (dist > 0.08 || dist < -0.08) continue;
             const distSq = dist * dist;
-            const falloff = 1 - distSq * 156; // ~0 at dist=0.08
+            const falloff = 1 - distSq * 156;
             if (falloff <= 0) continue;
             d += Math.sin(t * w.freq * Math.PI + w.age * 0.3) * w.amp * baseAmplitude * falloff;
         }
 
         return d;
-    },
-
-    // Backup: Harmonics model (not active)
-    // strumHarmonics(state, normalizedY, force) {
-    //     const harmonic = Math.max(1, Math.round(1 / Math.max(0.05, Math.min(normalizedY, 1 - normalizedY))));
-    //     const clampedHarmonic = Math.min(harmonic, 8);
-    //     state.harmonics.push({
-    //         freq: clampedHarmonic,
-    //         amp: Math.abs(force) * 0.015,
-    //         phase: Math.random() * Math.PI * 2,
-    //         decay: 0.9992,
-    //     });
-    //     if (state.harmonics.length > 12) state.harmonics.shift();
-    // },
-
-    getModelLabel() {
-        return 'Traveling';
     }
 };

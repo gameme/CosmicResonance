@@ -51,7 +51,7 @@ App.Config = {
     STRING_GLOW_SPEED:     20,
 
     ORB_MIN_RADIUS_PX:  8,
-    ORB_MAX_RADIUS_PCT: 0.14,
+    ORB_MAX_RADIUS_PCT: 0.28,
     ORB_VERTICAL_SHIFT: 0.05,
     ORB_PULSE_SPEED_1:  1.5,
     ORB_PULSE_AMP_1:    0.04,
@@ -88,6 +88,22 @@ App.Config = {
     MEET_OPACITY:     0.7,
     SPARKLE_DECAY:    0.025,
 
+    // Typography
+    // Base font = Math.min(W * FONT_BASE_W, H * FONT_BASE_H)
+    FONT_BASE_W:    0.15,
+    FONT_BASE_H:    0.09,
+
+    // Tiers (multipliers of base font)
+    FONT_HERO:      1.15,  // name reveal (Raaga)
+    FONT_TITLE:     0.65,  // "Meet"
+    FONT_BODY:      0.4,   // birth date
+    FONT_CAPTION:   0.3,   // footer ("Made with love")
+
+    // Layout offsets (multipliers of base font)
+    NAME_OFFSET_Y:  0.8,   // name position below orb center
+    DATE_OFFSET_Y:  1.1,   // date position below name
+    LETTER_SPREAD:  1.2,   // letter separation during formation
+
     BIRTH_DATE:       'May 16, 2026',
 
     AUDIO_UPDATE_INTERVAL: 200,
@@ -97,4 +113,5 @@ App.Config = {
     MELODY_FADE_END:   0.5,
 
     SHOW_PERF_HUD: false,
+    DEBUG: true,
 };

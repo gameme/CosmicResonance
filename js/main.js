@@ -29,17 +29,63 @@ window.App = window.App || {};
 
     // Scroll tracking
     let currentScroll = 0;
+    let _lastLoggedProgress = -1;
+    let _touchCount = 0;
+    let _scrollCount = 0;
+    let _lastCorrelationCheck = 0;
     function onScroll() {
         currentScroll = window.scrollY || window.pageYOffset || document.documentElement.scrollTop;
+        _scrollCount++;
     }
     window.addEventListener('scroll', onScroll, { passive: true });
     onScroll();
 
-    // Audio on first scroll
-    window.addEventListener('scroll', function startOnScroll() {
-        App.Audio.init(muteBtn);
-        window.removeEventListener('scroll', startOnScroll);
-    }, { once: true });
+    // Log scroll progress at key thresholds
+    function logScrollProgress(progress) {
+        const bucket = Math.round(progress * 20) / 20;
+        if (bucket !== _lastLoggedProgress && bucket > 0) {
+            _lastLoggedProgress = bucket;
+            App.dbg('SCROLL: progress=' + progress.toFixed(3) + ' scroll=' + currentScroll + '/' + (document.documentElement.scrollHeight - window.innerHeight));
+        }
+        // Check touch vs scroll correlation every 3 seconds
+        const now = Date.now();
+        if (now - _lastCorrelationCheck > 3000 && _touchCount > 0) {
+            if (_touchCount > 10 && _scrollCount === 0) {
+                App.dbgw('SCROLL_STUCK: ' + _touchCount + ' touch events but 0 scroll events in last 3s, scroll=' + currentScroll + ' maxScroll=' + (document.documentElement.scrollHeight - window.innerHeight) + ' progress=' + progress.toFixed(3));
+            }
+            _touchCount = 0;
+            _scrollCount = 0;
+            _lastCorrelationCheck = now;
+        }
+    }
+
+    // Track vertical touch movement for scroll correlation
+    let _lastTouchY = 0;
+    document.addEventListener('touchstart', function(e) { _lastTouchY = e.touches[0].clientY; }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+        if (Math.abs(e.touches[0].clientY - _lastTouchY) > 10) _touchCount++;
+    }, { passive: true });
+
+    // Audio + experience gated by start overlay tap
+    const startOverlay = document.getElementById('startOverlay');
+    let _experienceStartTime = 0;
+    if (startOverlay) {
+        startOverlay.addEventListener('click', function() {
+            App.dbg('MILESTONE: user tapped start overlay — initializing audio');
+            App.Audio.init(muteBtn);
+            window.scrollTo(0, 0);
+            document.body.style.overflowY = 'auto';
+            document.body.style.overflowX = 'hidden';
+            // Flash → hold → expand → fade
+            startOverlay.classList.add('flash');
+            setTimeout(function() {
+                startOverlay.classList.remove('flash');
+                startOverlay.classList.add('dismiss');
+            }, 1200);
+            _experienceStartTime = Date.now();
+            setTimeout(function() { startOverlay.remove(); }, 4000);
+        }, { once: true });
+    }
 
     // Mute toggle
     muteBtn.addEventListener('click', () => {
@@ -64,9 +110,9 @@ window.App = window.App || {};
 
         // Hit test on name text area
         const W = App.W, H = App.H;
-        const fs = Math.min(W * 0.09, H * 0.11);
+        const fs = App.baseFont(W, H);
         const orbMax = Math.min(W * C.ORB_MAX_RADIUS_PCT, H * C.ORB_MAX_RADIUS_PCT);
-        const nameY = H * (0.5 - C.ORB_VERTICAL_SHIFT) + orbMax + fs * 0.8;
+        const nameY = H * (0.5 - C.ORB_VERTICAL_SHIFT) + orbMax + fs * C.NAME_OFFSET_Y;
         if (Math.abs(x - W / 2) < fs * 2.5 && Math.abs(y - nameY) < fs * 0.8) {
             const segDur = C.FONT_HOLD_DURATION + C.FONT_TRANSITION_DURATION;
             const totalCycle = segDur * C.CYCLE_FONTS.length;
@@ -82,17 +128,11 @@ window.App = window.App || {};
             }
         }
 
-        const count = 20 + Math.floor(Math.random() * 15);
+        const count = 15 + Math.floor(Math.random() * 10);
         for (let i = 0; i < count; i++) {
             const angle = (i / count) * Math.PI * 2 + Math.random() * 0.4;
-            const speed = (2 + Math.random() * 4) * DPR;
-            sparkles.push({
-                x, y,
-                vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed,
-                life: 1.0,
-                size: (2 + Math.random() * 3) * DPR
-            });
+            const speed = (1.5 + Math.random() * 3) * DPR;
+            App.Particles.spawn(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, App.randomColor());
         }
     });
     babyImg.src = 'baby.png';
@@ -104,10 +144,10 @@ window.App = window.App || {};
 
     function cacheLetterMetrics() {
         const W = App.W;
-        const fs = Math.min(W * 0.09, App.H * 0.11);
+        const fs = App.baseFont(W, App.H);
         if (fs === cachedFontSize && cachedLetterPositions) return;
         cachedFontSize = fs;
-        ctx.font = `${fs}px Nistha, Georgia, serif`;
+        ctx.font = `${fs * C.FONT_HERO}px Nistha, Georgia, serif`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         const letters = App.NAME_LETTERS;
@@ -135,16 +175,6 @@ window.App = window.App || {};
         // Inner glow
         ctx.shadowColor = `rgba(${gc}, ${0.7 * intensity})`;
         ctx.shadowBlur = r * 0.6;
-        ctx.fillText(text, x, y);
-        ctx.shadowBlur = 0;
-    }
-
-    // Single-pass glow for steady-state text (hold/cycling) — half the draw calls.
-    function drawGlowTextLight(text, x, y, intensity) {
-        if (intensity <= 0) return;
-        const r = C.TEXT_GLOW_RADIUS * DPR;
-        ctx.shadowColor = `rgba(${C.TEXT_GLOW_COLOR}, ${0.5 * intensity})`;
-        ctx.shadowBlur = r;
         ctx.fillText(text, x, y);
         ctx.shadowBlur = 0;
     }
@@ -231,6 +261,17 @@ window.App = window.App || {};
 
     const sparkles = [];
     const trailPrev = new Map();
+
+    function updateAndDrawSparkles() {
+        for (let si = sparkles.length - 1; si >= 0; si--) {
+            const sp = sparkles[si];
+            sp.life -= C.SPARKLE_DECAY;
+            if (sp.life <= 0) { sparkles.splice(si, 1); continue; }
+            sp.x += sp.vx; sp.y += sp.vy; sp.vx *= 0.96; sp.vy *= 0.96;
+            ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.size * sp.life, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 240, 200, ${sp.life * sp.life * 0.9})`; ctx.fill();
+        }
+    }
     let lastTime = Date.now();
 
     function draw() {
@@ -241,7 +282,8 @@ window.App = window.App || {};
 
         const W = App.W, H = App.H;
         const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-        const progress = maxScroll > 0 ? Math.min(1, Math.max(0, currentScroll / maxScroll)) : 0;
+        const progress = (maxScroll > 0 && _experienceStartTime > 0) ? Math.min(1, Math.max(0, currentScroll / maxScroll)) : 0;
+        logScrollProgress(progress);
         const time = now * 0.001;
 
         try {
@@ -257,7 +299,7 @@ window.App = window.App || {};
         App.Supernova.applyShake(ctx);
         _m();
 
-        const watermarkOpacity = Math.max(0, 1 - progress / 0.03);
+        const watermarkOpacity = State.isComplete ? Math.max(0, 1 - progress / 0.03) : 0;
         watermark.style.opacity = watermarkOpacity;
         const hintOpacity = State.isComplete ? 0 : Math.max(0, 1 - smoothstep(C.STRINGS_FADE[0], C.STRINGS_FADE[1], progress));
         hint.style.opacity = hintOpacity;
@@ -265,7 +307,9 @@ window.App = window.App || {};
         App.Audio.update(progress);
 
         // Progress phases
-        const stringAppear = smoothstep(C.STRING_APPEAR[0], C.STRING_APPEAR[1], progress);
+        const introElapsed = _experienceStartTime > 0 ? Date.now() - _experienceStartTime : 0;
+        const introFade = (_experienceStartTime > 0 && !State.isComplete && introElapsed > 3500) ? Math.min(1, (introElapsed - 3500) / 1500) : 0;
+        const stringAppear = Math.max(introFade * 0.3, smoothstep(C.STRING_APPEAR[0], C.STRING_APPEAR[1], progress));
         const vibration = smoothstep(C.VIBRATION[0], C.VIBRATION[1], progress);
         const intensity = vibration * vibration;
         const orbForm = smoothstep(C.ORB_FORM[0], C.ORB_FORM[1], progress);
@@ -302,7 +346,7 @@ window.App = window.App || {};
         // Strings
         const spacing = W / (C.NUM_STRINGS + 1);
         App.Strings.decayPlucks();
-        App.WaveModels.update(time);
+        App.WaveModels.update();
 
         for (let s = 0; s < C.NUM_STRINGS; s++) {
             const baseX = spacing * (s + 1);
@@ -340,8 +384,8 @@ window.App = window.App || {};
 
         // TODO: Replace scattered timing constants with a phase-timeline abstraction
         // so formation, convergence, burst, and cycling don't drift out of sync.
-        const fontSize = Math.min(W * 0.09, H * 0.11);
-        const belowY = cy + orbMaxRadius + fontSize * 0.8;
+        const fontSize = App.baseFont(W, H);
+        const belowY = cy + orbMaxRadius + fontSize * C.NAME_OFFSET_Y;
         const letters = App.NAME_LETTERS;
         const letterDuration = C.LETTER_DURATION;
         const formationTime = letters.length * letterDuration;
@@ -349,8 +393,8 @@ window.App = window.App || {};
 
         // Letter convergence (used by both target and drawing)
         const convergence = supernovaCompression * supernovaCompression * supernovaCompression;
-        const spreadX = 1 + (1 - convergence) * 0.6;
-        const offsetY = (1 - convergence) * fontSize * 0.8;
+        const spreadX = 1 + (1 - convergence) * C.LETTER_SPREAD;
+        const offsetY = (1 - convergence) * fontSize * C.NAME_OFFSET_Y;
         const revealElapsed = State.startTime > 0 ? time - State.startTime : 0;
 
         // Letter formation target
@@ -403,6 +447,9 @@ window.App = window.App || {};
                 if (!App.Input.pointers.has(id)) trailPrev.delete(id);
             }
         }
+
+        // Sync pointer prev positions so speed is only non-zero on event frames
+        App.Input.syncPrev();
 
         // Update + draw particles
         const effectivePull = State.isComplete ? -0.3 : orbGrow;
@@ -465,6 +512,7 @@ window.App = window.App || {};
         if (revealProgress <= 0) { State.reset(); }
         if (revealProgress > 0) {
             if (State.startTime < 0) {
+                App.dbg('MILESTONE: reveal started, phase=' + State.phase);
                 State.enter(time, formationTime, C.HOLD_AFTER_FORMATION);
             }
             const _r = [performance.now()];
@@ -473,12 +521,14 @@ window.App = window.App || {};
             const photoP = revealElapsed > photoDelay ? easeOutQuint(Math.min(1, (revealElapsed - photoDelay) / C.PHOTO_FADE_DURATION)) : 0;
             const glowPulse = 0.85 + 0.15 * Math.sin(time * 1.5);
 
-            // "Meet"
-            const meetSize = fontSize * 0.35;
-            ctx.font = `200 ${meetSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillStyle = `rgba(255, 240, 210, ${textP * C.MEET_OPACITY})`;
-            drawGlowText('Meet', cx, cy - orbMaxRadius - meetSize * 1.2, textP * 0.6);
+            // "Meet" — appears instantly with the photo reveal
+            if (photoP > 0) {
+                const meetSize = fontSize * C.FONT_TITLE;
+                ctx.font = `200 ${meetSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillStyle = `rgba(255, 240, 210, ${C.MEET_OPACITY})`;
+                drawGlowText('Meet', cx, cy - orbMaxRadius - meetSize * 1.2, 0.6);
+            }
             _r.push(performance.now());
 
             const holdAfterFormation = C.HOLD_AFTER_FORMATION;
@@ -490,6 +540,7 @@ window.App = window.App || {};
                 const swaraIdx = Math.floor(revealElapsed / swaraInterval);
                 if (swaraIdx < 8 && !State.swaraTones[swaraIdx]) {
                     State.swaraTones[swaraIdx] = true;
+                    App.dbg('SWARA: ' + ['Sa','Re','Ga','Ma','Pa','Dha','Ni','Sa\''][swaraIdx] + ' (' + swaraIdx + ')');
                     App.Audio.playLetterChime(swaraIdx);
                 }
             }
@@ -500,7 +551,7 @@ window.App = window.App || {};
                 const targetX = cx + (letterPositions[activeIndex].x - cx) * spreadX;
                 const targetY = belowY + offsetY;
 
-                ctx.font = `${fontSize}px Nistha, Georgia, serif`;
+                ctx.font = `${fontSize * C.FONT_HERO}px Nistha, Georgia, serif`;
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                 ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
                 for (let i = 0; i < activeIndex; i++) {
@@ -527,6 +578,7 @@ window.App = window.App || {};
 
                     if (materializePhase > 0.5 && !State.letterBursts[activeIndex]) {
                         State.letterBursts[activeIndex] = true;
+                        App.dbg('LETTER: "' + letters[activeIndex] + '" materialized (' + activeIndex + '/' + (letters.length - 1) + ')');
                         for (let sp = 0; sp < 30; sp++) {
                             const a = (sp / 30) * Math.PI * 2 + Math.random() * 0.4;
                             const spd = 3 + Math.random() * 5;
@@ -538,18 +590,11 @@ window.App = window.App || {};
 
             // Sparkles
             _r.push(performance.now());
-            for (let si = sparkles.length - 1; si >= 0; si--) {
-                const sp = sparkles[si];
-                sp.life -= C.SPARKLE_DECAY;
-                if (sp.life <= 0) { sparkles.splice(si, 1); continue; }
-                sp.x += sp.vx; sp.y += sp.vy; sp.vx *= 0.96; sp.vy *= 0.96;
-                ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.size * sp.life, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(255, 240, 200, ${sp.life * sp.life * 0.9})`; ctx.fill();
-            }
+            updateAndDrawSparkles();
             _r.push(performance.now());
 
             if (revealElapsed >= formationTime && !State.photoBurst && letterPositions) {
-                ctx.font = `${fontSize}px Nistha, Georgia, serif`;
+                ctx.font = `${fontSize * C.FONT_HERO}px Nistha, Georgia, serif`;
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                 ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
                 for (let i = 0; i < letters.length; i++) {
@@ -570,7 +615,7 @@ window.App = window.App || {};
                 const nextFont = fonts[(segIndex + 1) % fonts.length];
 
                 function setFont(f, sizeMult) {
-                    ctx.font = `${f.weight}${fontSize * f.scale * sizeMult}px ${f.family}`;
+                    ctx.font = `${f.weight}${fontSize * C.FONT_HERO * f.scale * sizeMult}px ${f.family}`;
                 }
 
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -606,6 +651,7 @@ window.App = window.App || {};
                 if (!State.photoBurst) {
                     State.photoBurst = true;
                     State.markComplete();
+                    App.dbg('MILESTONE: SUPERNOVA BURST — photo revealed');
                     App.Audio.stopCompression();
                     App.Audio.playBurst();
                     App.Audio.playSingingBowl();
@@ -630,8 +676,8 @@ window.App = window.App || {};
 
             // Birth date — revealed by the cores as they pass through
             if (photoP >= 1) {
-                const dateSize = fontSize * 0.22;
-                const dateY = belowY + fontSize * 0.7;
+                const dateSize = fontSize * C.FONT_BODY;
+                const dateY = belowY + fontSize * C.DATE_OFFSET_Y;
                 const coreProgress = App.DualCore.getFlightProgress();
                 const dateP = easeOutQuint(Math.min(1, Math.max(0, (coreProgress - 0.25) / 0.3)));
                 if (dateP > 0) {
@@ -670,14 +716,7 @@ window.App = window.App || {};
 
         // Sparkles (outside reveal — handles tap bursts when scrolled away)
         if (State.isComplete && !(revealProgress > 0) && sparkles.length > 0) {
-            for (let si = sparkles.length - 1; si >= 0; si--) {
-                const sp = sparkles[si];
-                sp.life -= C.SPARKLE_DECAY;
-                if (sp.life <= 0) { sparkles.splice(si, 1); continue; }
-                sp.x += sp.vx; sp.y += sp.vy; sp.vx *= 0.96; sp.vy *= 0.96;
-                ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.size * sp.life, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(255, 240, 200, ${sp.life * sp.life * 0.9})`; ctx.fill();
-            }
+            updateAndDrawSparkles();
         }
 
         // Supernova flash + shockwave ring

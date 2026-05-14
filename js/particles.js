@@ -154,8 +154,9 @@ App.Particles = {
 
             p.vx *= C.DAMPING;
             p.vy *= C.DAMPING;
-            p.x += p.vx * dt * 0.06;
-            p.y += p.vy * dt * 0.06;
+            const moveScale = dt * 0.06 / DPR;
+            p.x += p.vx * moveScale;
+            p.y += p.vy * moveScale;
 
             p.tx[p.tIdx] = p.x;
             p.ty[p.tIdx] = p.y;
