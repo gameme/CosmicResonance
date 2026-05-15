@@ -12,8 +12,7 @@ App.DualCore = (function() {
     const TRAIL_COUNT = 8;
     const EXPEL_ANGLE_A = Math.PI + 0.3;
     const EXPEL_ANGLE_B = -0.3;
-    const EXPEL_DIST = 4;
-    const SETTLED_DOT_SCALE = 0.2;
+    const SETTLED_DOT_SCALE = 0.3;
 
     const STATE = { ORBITING_INSIDE: 0, ORBITING_OUTSIDE: 1, FLYING: 2, DESCENDING: 3, SETTLED: 4, DONE: 5 };
 
@@ -30,6 +29,7 @@ App.DualCore = (function() {
             _lastTime: -1,
             _orbitPhaseOffset: 0,
             _descentStart: 0, _descentFromX: 0, _descentFromY: 0,
+            _settledTime: 0,
         };
     }
 
@@ -48,6 +48,78 @@ App.DualCore = (function() {
     function bezierVal(t, p0, cp, p1) {
         const u = 1 - t;
         return u * u * p0 + 2 * u * t * cp + t * t * p1;
+    }
+
+    function drawFlame(ctx, x, y, coreR, colorInner, colorMid, alpha, time, seed, kindle) {
+        if (alpha <= 0) return;
+        const k = kindle !== undefined ? kindle : 1;
+        const flameH = coreR * 5.5 * k;
+        const flameW = coreR * 1.8 * k;
+
+        // Independent flicker per flame using seed offset
+        const t = time + seed * 17.3;
+        const flickX = (Math.sin(t * 6.1) * coreR * 0.25 + Math.sin(t * 9.7) * coreR * 0.12) * k;
+        const flickH = 1 + (Math.sin(t * 4.3) * 0.12 + Math.sin(t * 7.9) * 0.08) * k;
+        const lean = Math.sin(t * 3.2) * coreR * 0.4 * k;
+
+        const tipX = x + flickX + lean;
+        const tipY = y - flameH * flickH;
+
+        // Outer flame — rounded teardrop
+        ctx.beginPath();
+        ctx.moveTo(x, y + coreR * 0.5);
+        ctx.bezierCurveTo(
+            x - flameW * 1.1, y - flameH * 0.15,
+            x - flameW * 0.5, y - flameH * 0.7,
+            tipX, tipY
+        );
+        ctx.bezierCurveTo(
+            x + flameW * 0.5, y - flameH * 0.7,
+            x + flameW * 1.1, y - flameH * 0.15,
+            x, y + coreR * 0.5
+        );
+        const outerGrad = ctx.createLinearGradient(x, y + coreR, tipX, tipY);
+        outerGrad.addColorStop(0, `rgba(${colorMid}, ${alpha * 0.6})`);
+        outerGrad.addColorStop(0.4, `rgba(${colorInner}, ${alpha * 0.5})`);
+        outerGrad.addColorStop(0.8, `rgba(${colorMid}, ${alpha * 0.2})`);
+        outerGrad.addColorStop(1, `rgba(${colorMid}, 0)`);
+        ctx.fillStyle = outerGrad;
+        ctx.fill();
+
+        // Inner flame — smaller, brighter, slightly offset
+        const innerH = flameH * 0.45 * flickH;
+        const innerW = flameW * 0.45;
+        const innerTipX = x + flickX * 0.6;
+        const innerTipY = y - innerH;
+
+        ctx.beginPath();
+        ctx.moveTo(x, y + coreR * 0.2);
+        ctx.bezierCurveTo(
+            x - innerW, y - innerH * 0.2,
+            x - innerW * 0.4, y - innerH * 0.7,
+            innerTipX, innerTipY
+        );
+        ctx.bezierCurveTo(
+            x + innerW * 0.4, y - innerH * 0.7,
+            x + innerW, y - innerH * 0.2,
+            x, y + coreR * 0.2
+        );
+        const innerGrad = ctx.createLinearGradient(x, y, innerTipX, innerTipY);
+        innerGrad.addColorStop(0, `rgba(255, 250, 235, ${alpha * 0.9})`);
+        innerGrad.addColorStop(0.5, `rgba(${colorInner}, ${alpha * 0.7})`);
+        innerGrad.addColorStop(1, `rgba(${colorInner}, 0)`);
+        ctx.fillStyle = innerGrad;
+        ctx.fill();
+
+        // Base glow
+        const baseGrad = ctx.createRadialGradient(x, y, 0, x, y, coreR * 1.2);
+        baseGrad.addColorStop(0, `rgba(255, 245, 210, ${alpha * 0.6})`);
+        baseGrad.addColorStop(0.6, `rgba(${colorInner}, ${alpha * 0.2})`);
+        baseGrad.addColorStop(1, `rgba(${colorMid}, 0)`);
+        ctx.beginPath();
+        ctx.arc(x, y, coreR * 1.2, 0, TWO_PI);
+        ctx.fillStyle = baseGrad;
+        ctx.fill();
     }
 
     function drawCoreGlow(ctx, x, y, coreR, colorInner, colorMid, alpha) {
@@ -92,7 +164,14 @@ App.DualCore = (function() {
         const dist1Sq = (cp1x - cx) * (cp1x - cx) + (cp1y - cy) * (cp1y - cy);
         const dist2Sq = (cp2x - cx) * (cp2x - cx) + (cp2y - cy) * (cp2y - cy);
 
-        return dist1Sq > dist2Sq ? { x: cp1x, y: cp1y } : { x: cp2x, y: cp2y };
+        const chosen = dist1Sq > dist2Sq ? { x: cp1x, y: cp1y } : { x: cp2x, y: cp2y };
+
+        // Clamp to screen bounds so curves don't fly off edges on mobile
+        const margin = orbRadius * 0.5;
+        chosen.x = Math.max(margin, Math.min(App.W - margin, chosen.x));
+        chosen.y = Math.max(margin, Math.min(App.H - margin, chosen.y));
+
+        return chosen;
     }
 
     function launchFlight(core, fromX, fromY, targetX, targetY, cx, cy, orbRadius, time, duration) {
@@ -106,14 +185,17 @@ App.DualCore = (function() {
         core.cpY = cp.y;
     }
 
-    function initCoreFlight(core, cx, cy, orbRadius, expelAngle, time, duration) {
+    function initCoreFlight(core, cx, cy, orbRadius, expelAngle, time, duration, targetX, targetY) {
         core.state = STATE.FLYING;
-        core.startX = cx;
-        core.startY = cy;
+        // Start at orb edge, not center — avoids overlapping the photo
+        core.startX = cx + Math.cos(expelAngle) * orbRadius * 1.1;
+        core.startY = cy + Math.sin(expelAngle) * orbRadius * 1.1;
         core.startTime = time;
         core.flightDuration = duration;
-        core.cpX = cx + Math.cos(expelAngle) * orbRadius * EXPEL_DIST;
-        core.cpY = cy + Math.sin(expelAngle) * orbRadius * EXPEL_DIST;
+        // Control point arcs away from the orb
+        const cp = computeSafeControlPoint(core.startX, core.startY, targetX, targetY, cx, cy, orbRadius);
+        core.cpX = cp.x;
+        core.cpY = cp.y;
     }
 
     function draw(ctx, cx, cy, orbRadius, orbAlpha, time, compression, hasBurst, revealActive, footerTargets) {
@@ -151,6 +233,8 @@ App.DualCore = (function() {
 
             drawCoreGlow(ctx, xA, yA, coreR, '255, 220, 140', '255, 180, 80', orbAlpha);
             drawCoreGlow(ctx, xB, yB, coreR, '200, 220, 255', '150, 180, 255', orbAlpha);
+            coreA._renderedX = xA; coreA._renderedY = yA;
+            coreB._renderedX = xB; coreB._renderedY = yB;
 
             if (separation < 0.8) {
                 const DPR = App.DPR;
@@ -169,14 +253,14 @@ App.DualCore = (function() {
             else {
                 const T = App.Footer.TIMING;
                 const photoFade = App.Config.PHOTO_FADE_DURATION;
-                initCoreFlight(coreA, cx, cy, orbRadius, EXPEL_ANGLE_A, time, photoFade + T.primaryDelay + T.primaryFadeDuration * 0.6);
+                initCoreFlight(coreA, cx, cy, orbRadius, EXPEL_ANGLE_A, time, photoFade + T.primaryDelay + T.primaryFadeDuration * 0.6, footerTargets.shruti.x, footerTargets.shruti.y);
             }
 
             if (App.Footer.isSecondaryStarted()) { coreB.state = STATE.DONE; }
             else {
                 const T = App.Footer.TIMING;
                 const photoFade = App.Config.PHOTO_FADE_DURATION;
-                initCoreFlight(coreB, cx, cy, orbRadius, EXPEL_ANGLE_B, time, photoFade + T.primaryDelay + T.shiftDelay + T.revealDuration * 0.6);
+                initCoreFlight(coreB, cx, cy, orbRadius, EXPEL_ANGLE_B, time, photoFade + T.primaryDelay + T.shiftDelay + T.revealDuration * 0.6, footerTargets.vinod.x, footerTargets.vinod.y);
             }
 
             mergeFlash = 1.0;
@@ -218,14 +302,8 @@ App.DualCore = (function() {
         const lastX = core._renderedX || cx;
         const lastY = core._renderedY || cy;
 
-        // Trigger descent when footer milestone is reached (replaces instant kill)
+        // Trigger descent only from FLYING — orbiting cores wait until the user scrolls back down
         if (isDone && core.state === STATE.FLYING) {
-            core._descentStart = time;
-            core._descentFromX = lastX;
-            core._descentFromY = lastY;
-            core.state = STATE.DESCENDING;
-        }
-        if (isDone && core.state === STATE.ORBITING_OUTSIDE) {
             core._descentStart = time;
             core._descentFromX = lastX;
             core._descentFromY = lastY;
@@ -241,9 +319,16 @@ App.DualCore = (function() {
             core.state = STATE.ORBITING_OUTSIDE;
         }
 
-        // ORBITING_OUTSIDE → FLYING (reveal resumed)
+        // ORBITING_OUTSIDE → FLYING or direct descent (reveal resumed)
         if (core.state === STATE.ORBITING_OUTSIDE && revealActive) {
-            launchFlight(core, lastX, lastY, target.x, target.y, cx, cy, orbRadius, time, totalFlightTime);
+            if (isDone) {
+                core._descentStart = time;
+                core._descentFromX = lastX;
+                core._descentFromY = lastY;
+                core.state = STATE.DESCENDING;
+            } else {
+                launchFlight(core, lastX, lastY, target.x, target.y, cx, cy, orbRadius, time, totalFlightTime);
+            }
         }
 
         // --- Compute position ---
@@ -261,14 +346,14 @@ App.DualCore = (function() {
             alpha = 1 - eased * 0.3;
             if (p >= 1) {
                 core.state = STATE.SETTLED;
+                core._settledTime = time;
             }
         } else if (core.state === STATE.SETTLED) {
-            // Permanent glowing dot at the 'i' position
             x = dotTarget.x;
             y = dotTarget.y;
             coreR = coreR * SETTLED_DOT_SCALE;
-            // Gentle pulse to keep it alive
-            alpha = 0.6 + 0.2 * Math.sin(time * 2.0);
+            const kindle = Math.min(1, (time - core._settledTime) / 1.5);
+            alpha = (0.6 + kindle * 0.15) + 0.15 * Math.sin(time * 2.5) * kindle;
         } else if (core.state === STATE.FLYING) {
             const elapsed = time - core.startTime;
             const progress = Math.min(1, elapsed / core.flightDuration);
@@ -305,7 +390,12 @@ App.DualCore = (function() {
             core._renderedY = y;
             const finalAlpha = alpha * parentAlpha;
             if (finalAlpha > 0) {
-                drawCoreGlow(ctx, x, y, coreR, colorInner, colorMid, finalAlpha);
+                if (core.state === STATE.SETTLED) {
+                    const kindle = Math.min(1, (time - core._settledTime) / 1.5);
+                    drawFlame(ctx, x, y, coreR, colorInner, colorMid, finalAlpha, time, phaseOff, kindle);
+                } else {
+                    drawCoreGlow(ctx, x, y, coreR, colorInner, colorMid, finalAlpha);
+                }
             }
         }
     }
@@ -317,5 +407,9 @@ App.DualCore = (function() {
         return Math.max(aP, bP);
     }
 
-    return { draw, reset, getFlightProgress };
+    return {
+        draw, reset, getFlightProgress,
+        getCorePositions() { return [{ x: coreA._renderedX, y: coreA._renderedY }, { x: coreB._renderedX, y: coreB._renderedY }]; },
+        areBothOrbiting() { return coreA.state === STATE.ORBITING_OUTSIDE && coreB.state === STATE.ORBITING_OUTSIDE; }
+    };
 })();

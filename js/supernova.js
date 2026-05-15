@@ -7,12 +7,8 @@ App.Supernova = {
     screenShake: 0,
     compression: 0,
     rayBurst: 0,
-    raysAlive: true,
     _ripples: [],
     _lastRippleTime: 0,
-    compression: 0,
-    rayBurst: 0,
-    raysAlive: true,
 
     computeCompression(time, state, revealProgress, letterDuration, photoDelayAfterFormation) {
         this.compression = 0;
@@ -31,26 +27,36 @@ App.Supernova = {
         return this.compression;
     },
 
+    _smoothOrbScale: 1,
+
     getOrbScale() {
+        let target;
         if (this.compression > 0) {
             const curved = this.compression * this.compression * this.compression;
-            return 1 - curved * 0.95;
+            target = 1 - curved * 0.95;
+        } else if (this.flash > 0) {
+            target = 1 + this.flash * 0.8;
+        } else {
+            target = 1;
         }
-        if (this.flash > 0) return 1 + this.flash * 0.8;
-        return 1;
+        // Smooth large jumps (burst moment) over a few frames
+        this._smoothOrbScale += (target - this._smoothOrbScale) * App.Config.BLAST_ORB_LERP;
+        return this._smoothOrbScale;
     },
 
     spawnVortex(cx, cy, orbMaxRadius) {
-        if (this.compression <= 0.4) return;
+        if (this.compression <= 0.3) return;
         const DPR = App.DPR;
         const curved = this.compression * this.compression * this.compression;
-        const spawnRate = Math.floor(curved * 5);
+        // Last 25%: particle pull accelerates dramatically
+        const finalRush = Math.max(0, (this.compression - 0.75) / 0.25);
+        const spawnRate = Math.floor(curved * 5 + finalRush * finalRush * 10);
         for (let i = 0; i < spawnRate; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const dist = orbMaxRadius * (2 + Math.random() * 3);
+            const dist = orbMaxRadius * (2 + Math.random() * 3 - finalRush * 1.5);
             const sx = cx + Math.cos(angle) * dist;
             const sy = cy + Math.sin(angle) * dist;
-            const inwardSpeed = (3 + this.compression * 8) * DPR;
+            const inwardSpeed = (3 + this.compression * 8 + finalRush * finalRush * 20) * DPR;
             const color = App.randomColor();
             App.Particles.spawn(sx, sy, -Math.cos(angle) * inwardSpeed, -Math.sin(angle) * inwardSpeed, color);
         }
@@ -62,9 +68,12 @@ App.Supernova = {
         this.ring = 1.0;
         this.rayBurst = 1.0;
         this.ringRadius = orbMaxRadius;
-        this.screenShake = 1.0;
+        this.screenShake = 1.5;
 
-        const burstCount = 600 + Math.floor(Math.random() * 200);
+        // Clear vortex particles to free the pool — they're invisible post-flash anyway
+        App.Particles.clearAll();
+
+        const burstCount = 450 + Math.floor(Math.random() * 100);
         for (let sp = 0; sp < burstCount; sp++) {
             const a = (sp / burstCount) * Math.PI * 2 + Math.random() * 0.5;
             const spd = (3 + Math.random() * 14) * DPR;
@@ -96,7 +105,7 @@ App.Supernova = {
             const shakeX = (Math.random() - 0.5) * this.screenShake * 20 * DPR;
             const shakeY = (Math.random() - 0.5) * this.screenShake * 20 * DPR;
             ctx.translate(shakeX, shakeY);
-            this.screenShake *= 0.88;
+            this.screenShake *= 0.9;
         } else {
             this.screenShake = 0;
         }
@@ -131,7 +140,7 @@ App.Supernova = {
     renderEffects(ctx, cx, cy, W, H) {
         const DPR = App.DPR;
         if (this.flash > 0) {
-            this.flash *= 0.92;
+            this.flash *= 0.945;
             if (this.flash < 0.01) this.flash = 0;
             ctx.fillStyle = `rgba(255, 250, 230, ${this.flash * 0.6})`;
             ctx.fillRect(0, 0, W, H);
@@ -154,13 +163,11 @@ App.Supernova = {
             this.rayBurst *= 0.94;
             if (this.rayBurst < 0.01) {
                 this.rayBurst = 0;
-                this.raysAlive = false;
             }
         }
     },
 
     getRayIntensity(baseIntensity) {
-        if (!this.raysAlive) return 0;
         if (this.rayBurst > 0) return this.rayBurst;
         return baseIntensity;
     },

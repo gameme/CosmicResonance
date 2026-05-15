@@ -5,6 +5,7 @@ App.dbgw = function() {};
 App.dbge = function() {};
 
 window._showError = function(msg, stack) {
+    if (window.App && App.Config && !App.Config.DEBUG) return;
     let el = document.getElementById('error-overlay');
     if (!el) {
         el = document.createElement('pre');
@@ -56,7 +57,7 @@ window.addEventListener('unhandledrejection', function(e) {
             if (window._errorLog.length === 0) return;
             var payload = window._errorLog.join('\n');
             window._errorLog = [];
-            try { fetch('/log', { method: 'POST', body: payload, keepalive: true }); } catch(e) {}
+            try { fetch('/log', { method: 'POST', body: payload, keepalive: true }).catch(function(){}); } catch(e) {}
         }, 3000);
 
         App.dbg('BEACON_INIT: page loaded, DPR=' + window.devicePixelRatio + ', screen=' + screen.width + 'x' + screen.height);

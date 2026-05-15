@@ -3,6 +3,7 @@ window.App = window.App || {};
 App.Strings = {
     plucks: null,
     locks: new Map(),
+    strumEnergy: 0,
 
     init() {
         const C = App.Config;
@@ -36,6 +37,12 @@ App.Strings = {
         return this.plucks[stringIdx];
     },
 
+    consumeStrumEnergy() {
+        const e = this.strumEnergy;
+        this.strumEnergy = 0;
+        return e;
+    },
+
     checkInteraction(stringIdx, baseX, freq, stringIndex, time, phase, amplitude, alpha, color) {
         if (alpha <= 0.03) return;
         const C = App.Config;
@@ -51,12 +58,10 @@ App.Strings = {
             const displacement = App.WaveModels.getDisplacement(stringIdx, pointerT, time, amplitude, freq, phase);
             const stringX = baseX + displacement;
 
-            // Swept collision: did the pointer cross the string between prev and current frame?
             const crossedOver = (ptr.prevX - stringX) * (ptr.x - stringX) < 0;
             const dist = Math.abs(ptr.x - stringX);
             const hit = dist < C.STRING_HIT_RADIUS * DPR || crossedOver;
 
-            // Crossing resets lock only if the POINTER moved (not just the string oscillating)
             const pointerMoved = Math.abs(ptr.x - ptr.prevX) > 2 * DPR;
             if (crossedOver && pointerMoved) this.locks.delete(lockKey);
 
@@ -75,12 +80,12 @@ App.Strings = {
                 pluck.glow = 1;
                 pluck.glowSpread = 0;
 
-                // Feed strum into wave model — amplitude proportional to velocity
                 const normalizedY = ptr.y / H;
                 const normalizedSpeed = Math.min(1, (speed / DPR - C.STRING_PLUCK_MIN_SPEED) / (C.STRING_PLUCK_MAX_FORCE - C.STRING_PLUCK_MIN_SPEED));
                 App.dbg('STRUM: string=' + stringIdx + ' y=' + normalizedY.toFixed(2) + ' speed=' + normalizedSpeed.toFixed(2));
                 App.WaveModels.strum(stringIdx, normalizedY, normalizedSpeed);
                 App.Audio.playNote(normalizedY, normalizedSpeed, stringIdx);
+                this.strumEnergy += normalizedSpeed;
 
                 const burstCount = C.STRING_BURST_COUNT_MIN + Math.floor(Math.random() * C.STRING_BURST_COUNT_RANGE);
                 for (let b = 0; b < burstCount; b++) {
@@ -94,24 +99,40 @@ App.Strings = {
         }
     },
 
-    draw(ctx, s, baseX, freq, phase, time, amplitude, alpha, stringsBow, stringsFade, cx, W, H) {
+    draw(ctx, s, baseX, freq, phase, time, amplitude, alpha, orbGrow, orbForm, stringsFade, cx, cy, orbRadius, W, H) {
         const C = App.Config;
         const DPR = App.DPR;
 
-        const distFromCenter = (baseX - cx) / (W / 2);
-        const bowOffset = distFromCenter * stringsBow * W * App.Config.STRING_BOW_FACTOR;
-        const actualBaseX = baseX + bowOffset;
+        // Orb pushes strings outward into pairs at the edges
+        // On narrow screens, start pushing at orbForm (earlier) to prevent overlap
+        const edgeInset = W * C.STRING_PUSH_EDGE;
+        const pairGap = W * C.STRING_PAIR_GAP;
+        const pairTargets = [
+            edgeInset,
+            edgeInset + pairGap,
+            W - edgeInset - pairGap,
+            W - edgeInset,
+        ];
+        const aspect = W / H;
+        const mobileBlend = Math.max(0, Math.min(1, 1 - aspect * 1.5));
+        const desktopPush = App.easeOutQuint(orbGrow);
+        const mobilePush = App.easeOutQuint(Math.max(orbForm, orbGrow));
+        const pushAmount = desktopPush + (mobilePush - desktopPush) * mobileBlend;
+        const actualBaseX = baseX + (pairTargets[s] - baseX) * pushAmount;
 
         const pluck = this.getPluck(s);
         const color = App.STRING_COLORS[s];
 
+        // Aurora evolution: as orb grows, waves slow down and glow widens
+        const auroraBlend = orbGrow * orbGrow;
+        const effectiveFreq = freq * (1 - auroraBlend * (1 - C.STRING_AURORA_FREQ_MULT));
+
         const path = new Path2D();
-        path.moveTo(actualBaseX, 0);
-        for (let y = 0; y < H; y += C.STRING_STEP_PX) {
+        let started = false;
+        for (let y = 0; y <= H; y += C.STRING_STEP_PX) {
             const t = y / H;
 
-            // Wave model provides the displacement
-            const displacement = App.WaveModels.getDisplacement(s, t, time, amplitude, freq, phase);
+            let displacement = App.WaveModels.getDisplacement(s, t, time, amplitude, effectiveFreq, phase);
 
             let pluckDisp = 0;
             if (pluck.offset !== 0) {
@@ -119,19 +140,64 @@ App.Strings = {
                 pluckDisp = pluck.offset * Math.exp(-dy * dy);
             }
 
-            path.lineTo(actualBaseX + displacement + pluckDisp, y);
+            const x = actualBaseX + displacement + pluckDisp;
+            if (!started) { path.moveTo(x, y); started = true; }
+            else { path.lineTo(x, y); }
         }
 
-        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha * 0.15})`;
-        ctx.lineWidth = 6 * DPR;
+        // During fade: string becomes more translucent
+        const fadeAlpha = alpha * (1 - stringsFade * 0.7);
+
+        // Aurora glow: multi-layer bloom widens with orbGrow
+        const auroraGlow = C.STRING_AURORA_GLOW_MAX * auroraBlend * DPR;
+        if (auroraGlow > 1) {
+            // Outermost diffuse halo
+            ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${fadeAlpha * 0.03})`;
+            ctx.lineWidth = auroraGlow * 1.8;
+            ctx.lineCap = 'round';
+            ctx.stroke(path);
+            // Mid glow
+            ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${fadeAlpha * 0.07})`;
+            ctx.lineWidth = auroraGlow;
+            ctx.stroke(path);
+        }
+
+        // Standard 3-layer rendering (grows more luminous with aurora)
+        const baseGlow = (6 + auroraBlend * 6) * DPR;
+        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${fadeAlpha * (0.15 + auroraBlend * 0.1)})`;
+        ctx.lineWidth = baseGlow;
         ctx.stroke(path);
-        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha * 0.35})`;
-        ctx.lineWidth = 3 * DPR;
+        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${fadeAlpha * (0.35 + auroraBlend * 0.2)})`;
+        ctx.lineWidth = (3 + auroraBlend * 1.5) * DPR;
         ctx.stroke(path);
-        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha * 0.8})`;
-        ctx.lineWidth = 1.5 * DPR;
+        ctx.strokeStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${fadeAlpha * (0.8 + auroraBlend * 0.2)})`;
+        ctx.lineWidth = (1.5 + auroraBlend * 0.5) * DPR;
         ctx.stroke(path);
 
+        // White-hot highlight core (ribbon catching light)
+        if (auroraBlend > 0.3) {
+            const hlAlpha = fadeAlpha * (auroraBlend - 0.3) * 0.5;
+            ctx.strokeStyle = `rgba(255, 245, 220, ${hlAlpha})`;
+            ctx.lineWidth = (1 + auroraBlend * 0.5) * DPR;
+            ctx.stroke(path);
+        }
+
+        // Dissolve particles: string sheds itself toward the orb during fade
+        if (stringsFade > 0.05) {
+            const emitChance = C.STRING_DISSOLVE_CHANCE * stringsFade * (1 + stringsFade);
+            if (Math.random() < emitChance) {
+                const spawnT = 0.1 + Math.random() * 0.8;
+                const spawnY = spawnT * H;
+                const disp = App.WaveModels.getDisplacement(s, spawnT, time, amplitude, freq, phase);
+                const spawnX = actualBaseX + disp;
+
+                const angle = Math.atan2(cy - spawnY, cx - spawnX) + (Math.random() - 0.5) * 0.6;
+                const speed = (0.8 + Math.random() * 2) * DPR * (0.5 + stringsFade);
+                App.Particles.spawn(spawnX, spawnY, Math.cos(angle) * speed, Math.sin(angle) * speed, color);
+            }
+        }
+
+        // Pluck glow
         if (pluck.glow > 0) {
             const bandWidth = 35 * DPR;
             const topEdge = Math.max(0, pluck.y - pluck.glowSpread);
@@ -140,7 +206,7 @@ App.Strings = {
             const botBandEnd = Math.min(H, botEdge + bandWidth);
 
             const grad = ctx.createLinearGradient(0, 0, 0, H);
-            const glowAlpha = pluck.glow * alpha;
+            const glowAlpha = pluck.glow * fadeAlpha;
             const colorStr = `${color[0]}, ${color[1]}, ${color[2]}`;
 
             const stops = [];
@@ -154,10 +220,9 @@ App.Strings = {
             if (botBandEnd / H < 0.998) stops.push([botBandEnd / H, 'rgba(0,0,0,0)']);
             stops.push([1, 'rgba(0,0,0,0)']);
 
-            // Ensure monotonic stops
             let prev = -1;
             for (const [offset, col] of stops) {
-                const clamped = Math.max(prev + 0.001, Math.min(offset, 0.999));
+                const clamped = Math.min(1, Math.max(prev + 0.001, Math.min(offset, 0.999)));
                 grad.addColorStop(clamped, col);
                 prev = clamped;
             }
@@ -180,7 +245,7 @@ App.Strings = {
             whiteStops.push([1, 'rgba(0,0,0,0)']);
 
             for (const [offset, col] of whiteStops) {
-                const clamped = Math.max(prev + 0.001, Math.min(offset, 0.999));
+                const clamped = Math.min(1, Math.max(prev + 0.001, Math.min(offset, 0.999)));
                 whiteGrad.addColorStop(clamped, col);
                 prev = clamped;
             }
@@ -211,11 +276,9 @@ App.Strings = {
             const y = barY + s * (barH + gap);
             const color = App.STRING_COLORS[s];
 
-            // Background
             ctx.fillStyle = 'rgba(0,0,0,0.6)';
             ctx.fillRect(barX, y, barW, barH);
 
-            // Glow spread as a bar growing from center outward
             if (pluck.glow > 0) {
                 const spreadPct = Math.min(1, pluck.glowSpread / (H * 0.5));
                 const halfBar = barW * 0.5 * spreadPct;
@@ -223,19 +286,16 @@ App.Strings = {
                 ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${pluck.glow * 0.8})`;
                 ctx.fillRect(midX - halfBar, y, halfBar * 2, barH);
 
-                // Wavefront markers
                 ctx.fillStyle = `rgba(255, 255, 255, ${pluck.glow})`;
                 ctx.fillRect(midX - halfBar - 1 * DPR, y, 2 * DPR, barH);
                 ctx.fillRect(midX + halfBar - 1 * DPR, y, 2 * DPR, barH);
             }
 
-            // Pluck offset indicator
             const offsetPct = pluck.offset / (C.STRING_PLUCK_CLAMP * DPR);
             const offsetX = barX + barW * 0.5 + offsetPct * barW * 0.4;
             ctx.fillStyle = `rgba(255, 255, 255, 0.9)`;
             ctx.fillRect(offsetX - 1 * DPR, y, 2 * DPR, barH);
 
-            // Label
             ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, 0.9)`;
             ctx.textAlign = 'right';
             ctx.fillText(`S${s + 1}`, barX - 4 * DPR, y + 1 * DPR);

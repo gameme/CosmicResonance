@@ -43,6 +43,15 @@ App.Input = {
     },
 
     bindEvents(canvas) {
+        // Block iOS swipe-back/forward gesture when touching near screen edges
+        const EDGE_ZONE = 35;
+        document.addEventListener('touchstart', (e) => {
+            const x = e.touches[0].clientX;
+            if (x < EDGE_ZONE || x > window.innerWidth - EDGE_ZONE) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+
         // On touch devices, ignore synthetic mouse events to prevent ghost pointers
         canvas.addEventListener('touchstart', (e) => {
             this._hasTouch = true;

@@ -6,8 +6,7 @@ App.Footer = (function() {
         REVEALING_PRIMARY: 1,
         PRIMARY_VISIBLE: 2,
         SHIFTING: 3,
-        REVEALING_SECONDARY: 4,
-        COMPLETE: 5,
+        COMPLETE: 4,
     };
 
     const TIMING = {
@@ -86,10 +85,6 @@ App.Footer = (function() {
                     return computeProgress();
                 }
                 return { primaryP: 1, shiftP, revealP, shrutiP: 1, vinodP, settled: false };
-            }
-            case STATE.REVEALING_SECONDARY: {
-                advance(STATE.COMPLETE);
-                return computeProgress();
             }
             case STATE.COMPLETE:
                 return { primaryP: 1, shiftP: 1, revealP: 1, shrutiP: 1, vinodP: 1, settled: true };

@@ -12,13 +12,22 @@ window.App = window.App || {};
     const DPR = App.DPR;
 
     function resize() {
-        App.W = canvas.width = window.innerWidth * DPR;
-        App.H = canvas.height = window.innerHeight * DPR;
+        const newW = window.innerWidth * DPR;
+        const vvH = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        const newH = vvH * DPR;
+
+        App.W = canvas.width = newW;
+        canvas.height = newH;
         canvas.style.width = window.innerWidth + 'px';
-        canvas.style.height = window.innerHeight + 'px';
+        canvas.style.height = vvH + 'px';
+
+        App.H = newH;
     }
     resize();
     window.addEventListener('resize', resize);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', resize);
+    }
 
     // Init subsystems
     App.Audio.preload();
@@ -26,6 +35,19 @@ window.App = window.App || {};
     App.WaveModels.init();
     App.Particles.init();
     App.Input.bindEvents(canvas);
+
+    // Selectable HUD overlay for LAN URL
+    const debugHud = document.getElementById('debugHud');
+    if (C.SHOW_PERF_HUD && debugHud) {
+        debugHud.style.display = 'block';
+        function updateHudUrl() {
+            debugHud.textContent = window._lanUrl || 'resolving...';
+        }
+        updateHudUrl();
+        var hudInterval = setInterval(function() {
+            if (window._lanUrl) { updateHudUrl(); clearInterval(hudInterval); }
+        }, 500);
+    }
 
     // Scroll tracking
     let currentScroll = 0;
@@ -50,7 +72,7 @@ window.App = window.App || {};
         // Check touch vs scroll correlation every 3 seconds
         const now = Date.now();
         if (now - _lastCorrelationCheck > 3000 && _touchCount > 0) {
-            if (_touchCount > 10 && _scrollCount === 0) {
+            if (_touchCount > 10 && _scrollCount === 0 && progress < 0.98 && progress > 0.01) {
                 App.dbgw('SCROLL_STUCK: ' + _touchCount + ' touch events but 0 scroll events in last 3s, scroll=' + currentScroll + ' maxScroll=' + (document.documentElement.scrollHeight - window.innerHeight) + ' progress=' + progress.toFixed(3));
             }
             _touchCount = 0;
@@ -76,14 +98,9 @@ window.App = window.App || {};
             window.scrollTo(0, 0);
             document.body.style.overflowY = 'auto';
             document.body.style.overflowX = 'hidden';
-            // Flash → hold → expand → fade
-            startOverlay.classList.add('flash');
-            setTimeout(function() {
-                startOverlay.classList.remove('flash');
-                startOverlay.classList.add('dismiss');
-            }, 1200);
+            startOverlay.classList.add('dismiss');
             _experienceStartTime = Date.now();
-            setTimeout(function() { startOverlay.remove(); }, 4000);
+            setTimeout(function() { startOverlay.remove(); }, 2000);
         }, { once: true });
     }
 
@@ -116,15 +133,16 @@ window.App = window.App || {};
         if (Math.abs(x - W / 2) < fs * 2.5 && Math.abs(y - nameY) < fs * 0.8) {
             const segDur = C.FONT_HOLD_DURATION + C.FONT_TRANSITION_DURATION;
             const totalCycle = segDur * C.CYCLE_FONTS.length;
-            const now = Date.now() * 0.001;
-            const revElapsed = State.startTime > 0 ? now - State.startTime : 0;
+            const revElapsed = State.startTime > 0 ? _scaledTime - State.startTime : 0;
             const formTime = App.NAME_LETTERS.length * C.LETTER_DURATION;
             const raw = Math.max(0, revElapsed - formTime - C.PHOTO_DELAY_AFTER_FORMATION) + fontCycleOffset;
             const cycleT = raw % totalCycle;
             const segT = cycleT % segDur;
-            // Skip remaining hold time to start the transition immediately
+            // Jump to transition start so the scale-out/scale-in animation plays
             if (segT < C.FONT_HOLD_DURATION) {
                 fontCycleOffset += C.FONT_HOLD_DURATION - segT;
+            } else {
+                fontCycleOffset += segDur - segT + C.FONT_HOLD_DURATION;
             }
         }
 
@@ -213,44 +231,41 @@ window.App = window.App || {};
     }
 
     // State machine for reveal lifecycle
+    const PHASE = { IDLE: 0, REVEALING: 1, COMPLETE: 2 };
+    const PHASE_NAME = ['idle', 'revealing', 'complete'];
+
     const State = {
-        IDLE: 'idle',
-        REVEALING: 'revealing',
-        COMPLETE: 'complete',
-
-        phase: 'idle',
+        phase: PHASE.IDLE,
         startTime: -1,
-        letterBursts: new Array(App.NAME_LETTERS.length).fill(false),
+        lastBurstIndex: -1,
+        lastSwaraIndex: -1,
         photoBurst: false,
-        extraTones: [false, false, false], // Dha, Ni, Sa'
-        swaraTones: new Array(8).fill(false), // Sa Re Ga Ma Pa Dha Ni Sa'
 
-        get isComplete() { return this.phase === this.COMPLETE; },
+        get isComplete() { return this.phase === PHASE.COMPLETE; },
+        get phaseName() { return PHASE_NAME[this.phase]; },
 
-        enter(time, formationTime, holdAfterFormation) {
-            if (this.phase === this.COMPLETE) {
-                // Skip past photo delay so photo shows immediately on re-scroll
+        enter(time, formationTime) {
+            if (this.phase === PHASE.COMPLETE) {
                 const photoDelay = formationTime + App.Config.PHOTO_DELAY_AFTER_FORMATION;
                 this.startTime = time - photoDelay - App.Config.PHOTO_FADE_DURATION;
-                this.letterBursts.fill(true);
-                this.extraTones = [true, true, true];
+                this.lastBurstIndex = App.NAME_LETTERS.length - 1;
+                this.lastSwaraIndex = 7;
                 this.photoBurst = true;
             } else {
                 this.startTime = time;
-                this.phase = this.REVEALING;
+                this.phase = PHASE.REVEALING;
             }
         },
 
         markComplete() {
-            this.phase = this.COMPLETE;
+            this.phase = PHASE.COMPLETE;
         },
 
         reset() {
             this.startTime = -1;
             if (!this.isComplete) {
-                this.letterBursts.fill(false);
-                this.extraTones = [false, false, false];
-                this.swaraTones.fill(false);
+                this.lastBurstIndex = -1;
+                this.lastSwaraIndex = -1;
                 this.photoBurst = false;
                 sparkles.length = 0;
                 App.DualCore.reset();
@@ -261,22 +276,31 @@ window.App = window.App || {};
 
     const sparkles = [];
     const trailPrev = new Map();
+    let orbEnergy = 0;
 
     function updateAndDrawSparkles() {
-        for (let si = sparkles.length - 1; si >= 0; si--) {
+        let len = sparkles.length;
+        for (let si = len - 1; si >= 0; si--) {
             const sp = sparkles[si];
             sp.life -= C.SPARKLE_DECAY;
-            if (sp.life <= 0) { sparkles.splice(si, 1); continue; }
+            if (sp.life <= 0) {
+                sparkles[si] = sparkles[len - 1];
+                len--;
+                continue;
+            }
             sp.x += sp.vx; sp.y += sp.vy; sp.vx *= 0.96; sp.vy *= 0.96;
             ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.size * sp.life, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(255, 240, 200, ${sp.life * sp.life * 0.9})`; ctx.fill();
         }
+        sparkles.length = len;
     }
     let lastTime = Date.now();
+    let _scaledTime = 0;
 
     function draw() {
         const now = Date.now();
-        const dt = Math.min(32, now - lastTime);
+        const rawDt = Math.min(32, now - lastTime);
+        const dt = rawDt * C.TIME_SCALE;
         App.Footer.markInactive();
         lastTime = now;
 
@@ -284,7 +308,8 @@ window.App = window.App || {};
         const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
         const progress = (maxScroll > 0 && _experienceStartTime > 0) ? Math.min(1, Math.max(0, currentScroll / maxScroll)) : 0;
         logScrollProgress(progress);
-        const time = now * 0.001;
+        _scaledTime += (rawDt * 0.001) * C.TIME_SCALE;
+        const time = _scaledTime;
 
         try {
 
@@ -308,14 +333,13 @@ window.App = window.App || {};
 
         // Progress phases
         const introElapsed = _experienceStartTime > 0 ? Date.now() - _experienceStartTime : 0;
-        const introFade = (_experienceStartTime > 0 && !State.isComplete && introElapsed > 3500) ? Math.min(1, (introElapsed - 3500) / 1500) : 0;
-        const stringAppear = Math.max(introFade * 0.3, smoothstep(C.STRING_APPEAR[0], C.STRING_APPEAR[1], progress));
+        const introFade = (_experienceStartTime > 0 && !State.isComplete && introElapsed > 1200) ? Math.min(1, (introElapsed - 1200) / 1000) : 0;
+        const stringAppear = Math.max(introFade * 0.6, smoothstep(C.STRING_APPEAR[0], C.STRING_APPEAR[1], progress));
         const vibration = smoothstep(C.VIBRATION[0], C.VIBRATION[1], progress);
         const intensity = vibration * vibration;
         const orbForm = smoothstep(C.ORB_FORM[0], C.ORB_FORM[1], progress);
         const orbGrow = smoothstep(C.ORB_GROW[0], C.ORB_GROW[1], progress);
         const stringsFade = smoothstep(C.STRINGS_FADE[0], C.STRINGS_FADE[1], progress);
-        const rayIntensity = smoothstep(C.RAY_INTENSITY[0], C.RAY_INTENSITY[1], progress);
         const revealProgress = smoothstep(C.REVEAL[0], C.REVEAL[1], progress);
 
         // Orb properties
@@ -326,7 +350,9 @@ window.App = window.App || {};
         const orbRadius = orbMinRadius + (orbMaxRadius - orbMinRadius) * easeOutQuint(orbGrow);
 
         // Orb pulse (computed early so god rays can use the pulsed radius)
-        const pulse = 1 + Math.sin(time * C.ORB_PULSE_SPEED_1) * C.ORB_PULSE_AMP_1 + Math.sin(time * C.ORB_PULSE_SPEED_2) * C.ORB_PULSE_AMP_2;
+        const rawPulse = 1 + Math.sin(time * C.ORB_PULSE_SPEED_1) * C.ORB_PULSE_AMP_1 + Math.sin(time * C.ORB_PULSE_SPEED_2) * C.ORB_PULSE_AMP_2;
+        const pulseDampen = (revealProgress > 0 && !State.photoBurst) ? revealProgress : 0;
+        const pulse = rawPulse + (1 - rawPulse) * pulseDampen;
 
         // Supernova compression (must be computed before orbScale)
         const supernovaCompression = App.Supernova.computeCompression(time, State, revealProgress, C.LETTER_DURATION, C.PHOTO_DELAY_AFTER_FORMATION);
@@ -337,9 +363,10 @@ window.App = window.App || {};
         const orbScale = App.Supernova.getOrbScale();
         const orbPulsedRadius = orbRadius * pulse * orbScale;
 
-        // God Rays
+        // God Rays — driven by orb energy (previous frame)
         App.Supernova.updateRays();
-        const effectiveRayIntensity = App.Supernova.getRayIntensity(rayIntensity);
+        const energyRayIntensity = Math.min(1, orbEnergy * C.ENERGY_BRIGHTNESS_SCALE * 1.5);
+        const effectiveRayIntensity = App.Supernova.getRayIntensity(energyRayIntensity);
         if (effectiveRayIntensity > 0) drawGodRays(cx, cy, orbPulsedRadius, effectiveRayIntensity, time);
         _m();
 
@@ -359,7 +386,7 @@ window.App = window.App || {};
 
             if (alpha <= 0.03) continue;
 
-            const actualBaseX = App.Strings.draw(ctx, s, baseX, freq, phase, time, amplitude, alpha, orbGrow, stringsFade, cx, W, H);
+            const actualBaseX = App.Strings.draw(ctx, s, baseX, freq, phase, time, amplitude, alpha, orbGrow, orbForm, stringsFade, cx, cy, orbPulsedRadius, W, H);
 
             // Spawn particles from strings
             const envelope_max = vibration;
@@ -457,41 +484,153 @@ window.App = window.App || {};
         App.Particles.draw(ctx, time, intensity);
         _m();
 
+        // Orb energy: driven by particle absorption + strum activity
+        const absorbed = App.Particles.consumeAbsorbed();
+        const strummed = App.Strings.consumeStrumEnergy();
+        const inReveal = revealProgress > 0 && !State.photoBurst;
+        orbEnergy = orbEnergy * (inReveal ? C.ENERGY_DECAY_REVEAL : C.ENERGY_DECAY)
+                  + (inReveal ? 0 : absorbed * C.ENERGY_GAIN_ABSORB)
+                  + strummed * C.ENERGY_GAIN_STRUM;
+        if (State.photoBurst) orbEnergy = Math.max(orbEnergy, C.ENERGY_FLOOR_POST_BURST);
+        const energyBrightness = C.ENERGY_BRIGHTNESS_MIN + Math.min(C.ENERGY_BRIGHTNESS_RANGE, orbEnergy * C.ENERGY_BRIGHTNESS_SCALE);
+        const energyIntensity = Math.min(C.ENERGY_INTENSITY_MAX, 1.0 + orbEnergy * C.ENERGY_INTENSITY_SCALE);
+
         // Orb
         if (orbForm > 0) {
+            const _orbStart = performance.now();
             const r = orbPulsedRadius;
-            const orbAlpha = orbForm * (1 - revealProgress * 0.5);
-            const breathe = 0.7 + 0.3 * Math.sin(time * 1.2);
-            const atmoRadius = r * (2.5 + Math.sin(time * 0.8) * 0.4);
+            const orbAlpha = orbForm * energyBrightness;
+            const breathe = 0.85 + 0.15 * Math.sin(time * 1.2);
 
-            // Stellar compression: gold → yellow-white → blue-white, increasing brightness
+            // Stellar compression: gold → yellow-white → blue-white
             const heat = App.Supernova.getHeat();
-            const coreR = Math.round(255 - heat * 60);
-            const coreG = Math.round(240 - heat * 20);
-            const coreB = Math.round(200 + heat * 55);
+            const ei = energyIntensity;
+            const whiteShift = Math.min(1, (ei - 1) * 0.8);
+            const coreR = Math.min(255, Math.round((255 - heat * 60) * ei));
+            const coreG = Math.min(255, Math.round((240 - heat * 20 + whiteShift * 15) * ei));
+            const coreB = Math.min(255, Math.round((200 + heat * 55 + whiteShift * 55) * ei));
             const brightnessMult = 1 + heat * 2;
 
-            const atmoGrad = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, atmoRadius);
-            atmoGrad.addColorStop(0, `rgba(${coreR}, ${coreG}, ${coreB}, ${Math.min(1, orbAlpha * (0.25 + heat * 0.6) * breathe * brightnessMult)})`);
-            atmoGrad.addColorStop(0.5, `rgba(${Math.round(200 - heat * 50)}, ${Math.round(150 + heat * 50)}, ${Math.round(50 + heat * 180)}, ${orbAlpha * (0.08 + heat * 0.15) * breathe})`);
-            atmoGrad.addColorStop(1, `rgba(${Math.round(200 - heat * 80)}, ${Math.round(120 + heat * 60)}, ${Math.round(30 + heat * 200)}, 0)`);
-            ctx.beginPath(); ctx.arc(cx, cy, atmoRadius, 0, Math.PI * 2); ctx.fillStyle = atmoGrad; ctx.fill();
-
+            // Disc — bright opaque center, smooth limb darkening
+            const discA = Math.min(1, orbAlpha * 1.5 * brightnessMult);
             const discGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-            discGrad.addColorStop(0, `rgba(${coreR}, ${coreG}, ${coreB}, ${Math.min(1, orbAlpha * 0.95 * brightnessMult)})`);
-            discGrad.addColorStop(0.6, `rgba(${Math.round(220 - heat * 40)}, ${Math.round(200 + heat * 20)}, ${Math.round(100 + heat * 120)}, ${Math.min(1, orbAlpha * 0.7 * brightnessMult)})`);
-            discGrad.addColorStop(1, `rgba(${Math.round(200 - heat * 50)}, ${Math.round(160 + heat * 40)}, ${Math.round(60 + heat * 160)}, ${orbAlpha * 0.3})`);
+            discGrad.addColorStop(0, `rgba(${Math.min(255, coreR + 30)}, ${Math.min(255, coreG + 20)}, ${Math.min(255, coreB + 10)}, ${discA})`);
+            discGrad.addColorStop(0.4, `rgba(${coreR}, ${coreG}, ${coreB}, ${discA * 0.95})`);
+            discGrad.addColorStop(0.7, `rgba(${Math.min(255, Math.round(240 * ei))}, ${Math.min(255, Math.round(200 * ei))}, ${Math.min(255, Math.round(120 * ei))}, ${discA * 0.85})`);
+            discGrad.addColorStop(0.88, `rgba(${Math.min(255, Math.round(220 * ei))}, ${Math.min(255, Math.round(170 * ei))}, ${Math.min(255, Math.round(80 * ei))}, ${discA * 0.6})`);
+            discGrad.addColorStop(1, `rgba(200, 140, 60, ${discA * 0.2})`);
             ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fillStyle = discGrad; ctx.fill();
+
+            // Corona — tight warm halo just beyond the disc
+            const coronaR = r * 1.5;
+            const coronaA = orbAlpha * breathe * 0.5;
+            const coronaGrad = ctx.createRadialGradient(cx, cy, r * 0.7, cx, cy, coronaR);
+            coronaGrad.addColorStop(0, `rgba(255, 210, 130, ${coronaA})`);
+            coronaGrad.addColorStop(0.4, `rgba(255, 190, 100, ${coronaA * 0.4})`);
+            coronaGrad.addColorStop(0.7, `rgba(255, 170, 80, ${coronaA * 0.12})`);
+            coronaGrad.addColorStop(1, 'rgba(255, 150, 60, 0)');
+            ctx.beginPath(); ctx.arc(cx, cy, coronaR, 0, Math.PI * 2); ctx.fillStyle = coronaGrad; ctx.fill();
+
+            // Additive bloom — screen-filling glow, drives the "staring at the sun" effect
+            const prevComp = ctx.globalCompositeOperation;
+            ctx.globalCompositeOperation = 'lighter';
+
+            // Inner bloom: always present, intensity driven by energy
+            const bloom1A = Math.min(0.5, orbAlpha * 0.3 * breathe);
+            const bloom1R = r * (1.6 + Math.min(1.5, orbEnergy * 0.1));
+            const bloomGrad1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, bloom1R);
+            bloomGrad1.addColorStop(0, `rgba(${coreR}, ${coreG}, ${coreB}, ${bloom1A})`);
+            bloomGrad1.addColorStop(0.3, `rgba(255, 220, 160, ${bloom1A * 0.5})`);
+            bloomGrad1.addColorStop(0.6, `rgba(255, 200, 120, ${bloom1A * 0.15})`);
+            bloomGrad1.addColorStop(1, 'rgba(255, 180, 100, 0)');
+            ctx.beginPath(); ctx.arc(cx, cy, bloom1R, 0, Math.PI * 2);
+            ctx.fillStyle = bloomGrad1; ctx.fill();
+
+            // Outer bloom: grows dramatically with energy (the fun part)
+            const outerBloomA = Math.min(0.3, orbEnergy * C.ENERGY_BLOOM_ALPHA);
+            if (outerBloomA > 0.005) {
+                const bloom2R = r * (2.5 + Math.min(5, orbEnergy * C.ENERGY_BLOOM_SCALE));
+                const bloomGrad2 = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, bloom2R);
+                bloomGrad2.addColorStop(0, `rgba(255, 230, 180, ${outerBloomA})`);
+                bloomGrad2.addColorStop(0.3, `rgba(255, 210, 150, ${outerBloomA * 0.4})`);
+                bloomGrad2.addColorStop(0.6, `rgba(255, 190, 120, ${outerBloomA * 0.1})`);
+                bloomGrad2.addColorStop(1, 'rgba(255, 170, 100, 0)');
+                ctx.beginPath(); ctx.arc(cx, cy, bloom2R, 0, Math.PI * 2);
+                ctx.fillStyle = bloomGrad2; ctx.fill();
+            }
+
+            ctx.globalCompositeOperation = prevComp;
+
+            if (C.SHOW_PERF_HUD && !window._orbBloomMs) window._orbBloomMs = 0;
+            if (C.SHOW_PERF_HUD) window._orbBloomMs = performance.now() - _orbStart;
 
             // Dual-core: pre-burst orbiting inside the orb
             if (!State.photoBurst) {
                 App.DualCore.draw(ctx, cx, cy, r, orbAlpha, time, App.Supernova.compression, false, 0, null);
+
+                // Core collision — expel particles when the two cores pass near each other
+                const cores = App.DualCore.getCorePositions();
+                const cdx = cores[1].x - cores[0].x;
+                const cdy = cores[1].y - cores[0].y;
+                const coreDist = Math.sqrt(cdx * cdx + cdy * cdy);
+                const threshold = r * 0.3;
+                if (orbGrow > 0.1 && coreDist < threshold && coreDist > 0) {
+                    const proximity = 1 - coreDist / threshold;
+                    const midX = (cores[0].x + cores[1].x) / 2;
+                    const midY = (cores[0].y + cores[1].y) / 2;
+
+                    // Collision flash — always visible when cores are near
+                    const flashR = r * 0.4 * proximity;
+                    const flashGrad = ctx.createRadialGradient(midX, midY, 0, midX, midY, flashR);
+                    flashGrad.addColorStop(0, `rgba(255, 255, 240, ${proximity * proximity * 0.9})`);
+                    flashGrad.addColorStop(0.3, `rgba(255, 230, 180, ${proximity * 0.5})`);
+                    flashGrad.addColorStop(0.7, `rgba(255, 200, 120, ${proximity * 0.15})`);
+                    flashGrad.addColorStop(1, 'rgba(255, 180, 100, 0)');
+                    ctx.beginPath(); ctx.arc(midX, midY, flashR, 0, Math.PI * 2);
+                    ctx.fillStyle = flashGrad; ctx.fill();
+
+                    if (Math.random() < proximity * 0.6) {
+                        const outAngle = Math.atan2(midY - cy, midX - cx);
+                        const burstCount = 1 + Math.floor(proximity * 3);
+                        const escapeBoost = 1 + orbPull * 3;
+                        for (let b = 0; b < burstCount; b++) {
+                            const angle = outAngle + (Math.random() - 0.5) * 1.2;
+                            const spd = (3 + Math.random() * 5) * DPR * escapeBoost;
+                            App.Particles.spawn(midX, midY, Math.cos(angle) * spd, Math.sin(angle) * spd, App.randomColor());
+                        }
+                    }
+                }
             }
 
-            if (orbGrow > 0.3) {
-                const ringAlpha = easeOutQuint((orbGrow - 0.3) / 0.7) * (1 - revealProgress * 0.3);
-                ctx.beginPath(); ctx.arc(cx, cy, r + 1 * DPR, 0, Math.PI * 2);
-                ctx.strokeStyle = `rgba(255, 220, 150, ${ringAlpha * 0.4})`; ctx.lineWidth = 2 * DPR; ctx.stroke();
+            if (orbGrow > 0.3 || State.isComplete) {
+                const ringAlpha = State.isComplete ? energyBrightness : easeOutQuint((orbGrow - 0.3) / 0.7) * energyBrightness;
+                const limbWidth = 8 * DPR;
+                const limbInner = r - limbWidth * 0.3;
+                const limbOuter = r + limbWidth;
+                const limbGrad = ctx.createRadialGradient(cx, cy, limbInner, cx, cy, limbOuter);
+                limbGrad.addColorStop(0, `rgba(255, 230, 170, 0)`);
+                limbGrad.addColorStop(0.25, `rgba(255, 220, 150, ${ringAlpha * 0.35})`);
+                limbGrad.addColorStop(0.5, `rgba(255, 200, 120, ${ringAlpha * 0.2})`);
+                limbGrad.addColorStop(0.75, `rgba(255, 180, 100, ${ringAlpha * 0.08})`);
+                limbGrad.addColorStop(1, `rgba(255, 160, 80, 0)`);
+                ctx.beginPath(); ctx.arc(cx, cy, limbOuter, 0, Math.PI * 2);
+                ctx.fillStyle = limbGrad; ctx.fill();
+
+                if (State.photoBurst) {
+                    const pulseOffset = pulse - 1;
+                    const peakness = Math.max(0, (pulseOffset - 0.02) / 0.035);
+                    if (peakness > 0 && Math.random() < peakness * 0.3) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const spd = (0.5 + peakness * 2) * DPR;
+                        App.Particles.spawn(
+                            cx + Math.cos(angle) * r,
+                            cy + Math.sin(angle) * r,
+                            Math.cos(angle) * spd,
+                            Math.sin(angle) * spd,
+                            App.randomColor()
+                        );
+                    }
+                }
             }
         }
 
@@ -503,7 +642,41 @@ window.App = window.App || {};
         if (State.photoBurst) {
             const footerTargets = App.Footer.getTargets(fontSize, cx, H);
             const coreAlpha = Math.min(1, orbForm * 3);
-            App.DualCore.draw(ctx, cx, cy, orbPulsedRadius, coreAlpha, time, 0, true, revealProgress > 0, footerTargets);
+            const coresActive = progress > 0.88;
+            App.DualCore.draw(ctx, cx, cy, orbPulsedRadius, coreAlpha, time, 0, true, coresActive, footerTargets);
+
+            if (App.DualCore.areBothOrbiting()) {
+                const cores = App.DualCore.getCorePositions();
+                const cdx = cores[1].x - cores[0].x;
+                const cdy = cores[1].y - cores[0].y;
+                const coreDist = Math.sqrt(cdx * cdx + cdy * cdy);
+                const threshold = orbPulsedRadius * 0.4;
+                if (coreDist < threshold && coreDist > 0) {
+                    const proximity = 1 - coreDist / threshold;
+                    const midX = (cores[0].x + cores[1].x) / 2;
+                    const midY = (cores[0].y + cores[1].y) / 2;
+
+                    const flashR = orbPulsedRadius * 0.35 * proximity;
+                    const flashGrad = ctx.createRadialGradient(midX, midY, 0, midX, midY, flashR);
+                    flashGrad.addColorStop(0, `rgba(255, 255, 240, ${proximity * proximity * 0.8})`);
+                    flashGrad.addColorStop(0.3, `rgba(255, 230, 180, ${proximity * 0.4})`);
+                    flashGrad.addColorStop(0.7, `rgba(255, 200, 120, ${proximity * 0.12})`);
+                    flashGrad.addColorStop(1, 'rgba(255, 180, 100, 0)');
+                    ctx.beginPath(); ctx.arc(midX, midY, flashR, 0, Math.PI * 2);
+                    ctx.fillStyle = flashGrad; ctx.fill();
+
+                    if (Math.random() < proximity * 0.5) {
+                        const outAngle = Math.atan2(midY - cy, midX - cx);
+                        const burstCount = 1 + Math.floor(proximity * 4);
+                        for (let b = 0; b < burstCount; b++) {
+                            const angle = outAngle + (Math.random() - 0.5) * 1.4;
+                            const spd = (2 + Math.random() * 4) * DPR;
+                            App.Particles.spawn(midX, midY, Math.cos(angle) * spd, Math.sin(angle) * spd, App.randomColor());
+                        }
+                        App.Audio.playCollisionChime(proximity);
+                    }
+                }
+            }
         }
         _m();
 
@@ -512,11 +685,11 @@ window.App = window.App || {};
         if (revealProgress <= 0) { State.reset(); }
         if (revealProgress > 0) {
             if (State.startTime < 0) {
-                App.dbg('MILESTONE: reveal started, phase=' + State.phase);
-                State.enter(time, formationTime, C.HOLD_AFTER_FORMATION);
+                App.dbg('MILESTONE: reveal started, phase=' + State.phaseName);
+                State.enter(time, formationTime);
             }
             const _r = [performance.now()];
-            const textP = easeOutQuint(Math.min(1, revealProgress / 0.5));
+            const textP = easeOutQuint(Math.min(1, revealProgress / 0.15));
             const photoDelay = formationTime + C.PHOTO_DELAY_AFTER_FORMATION;
             const photoP = revealElapsed > photoDelay ? easeOutQuint(Math.min(1, (revealElapsed - photoDelay) / C.PHOTO_FADE_DURATION)) : 0;
             const glowPulse = 0.85 + 0.15 * Math.sin(time * 1.5);
@@ -531,15 +704,14 @@ window.App = window.App || {};
             }
             _r.push(performance.now());
 
-            const holdAfterFormation = C.HOLD_AFTER_FORMATION;
             const letterPositions = cachedLetterPositions;
 
             // Timed swara sequence: Sa Re Ga Ma Pa Dha Ni Sa' spread across formation
             if (revealElapsed > 0 && revealElapsed < formationTime) {
                 const swaraInterval = formationTime / 8;
                 const swaraIdx = Math.floor(revealElapsed / swaraInterval);
-                if (swaraIdx < 8 && !State.swaraTones[swaraIdx]) {
-                    State.swaraTones[swaraIdx] = true;
+                if (swaraIdx < 8 && swaraIdx > State.lastSwaraIndex) {
+                    State.lastSwaraIndex = swaraIdx;
                     App.dbg('SWARA: ' + ['Sa','Re','Ga','Ma','Pa','Dha','Ni','Sa\''][swaraIdx] + ' (' + swaraIdx + ')');
                     App.Audio.playLetterChime(swaraIdx);
                 }
@@ -573,11 +745,13 @@ window.App = window.App || {};
 
                 if (materializePhase > 0) {
                     const mAlpha = textP * easeOutQuint(materializePhase);
+                    const popScale = 1 + C.LETTER_POP_SCALE * Math.sin(materializePhase * Math.PI);
+                    ctx.font = `${fontSize * C.FONT_HERO * popScale}px Nistha, Georgia, serif`;
                     ctx.fillStyle = `rgba(255, 248, 230, ${mAlpha})`;
                     drawGlowText(letters[activeIndex], targetX, belowY + offsetY, mAlpha);
 
-                    if (materializePhase > 0.5 && !State.letterBursts[activeIndex]) {
-                        State.letterBursts[activeIndex] = true;
+                    if (materializePhase > 0.15 && activeIndex > State.lastBurstIndex) {
+                        State.lastBurstIndex = activeIndex;
                         App.dbg('LETTER: "' + letters[activeIndex] + '" materialized (' + activeIndex + '/' + (letters.length - 1) + ')');
                         for (let sp = 0; sp < 30; sp++) {
                             const a = (sp / 30) * Math.PI * 2 + Math.random() * 0.4;
@@ -614,32 +788,42 @@ window.App = window.App || {};
                 const currFont = fonts[segIndex];
                 const nextFont = fonts[(segIndex + 1) % fonts.length];
 
+                // Burst reaction: flash bright + scale punch
+                const burstFlash = App.Supernova.flash;
+                const burstScale = 1 + burstFlash * C.BURST_TEXT_SCALE;
+                const flashR = Math.round(255);
+                const flashG = Math.round(248 + burstFlash * 7);
+                const flashB = Math.round(230 + burstFlash * 25);
+                const flashColor = `rgba(${flashR}, ${flashG}, ${flashB},`;
+                const burstGlow = burstFlash * C.BURST_TEXT_GLOW;
+
                 function setFont(f, sizeMult) {
-                    ctx.font = `${f.weight}${fontSize * C.FONT_HERO * f.scale * sizeMult}px ${f.family}`;
+                    ctx.font = `${f.weight}${fontSize * C.FONT_HERO * f.scale * sizeMult * burstScale}px ${f.family}`;
                 }
 
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                 if (segT < holdDuration) {
                     setFont(currFont, 1);
-                    ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
-                    drawGlowText(currFont.text, cx, belowY + currFont.y * DPR, textP * glowPulse);
+                    ctx.fillStyle = `${flashColor} ${textP})`;
+                    drawGlowText(currFont.text, cx, belowY + currFont.y * DPR, textP * glowPulse + burstGlow);
                 } else {
                     const p = (segT - holdDuration) / transitionDuration;
-                    // Outgoing: smooth scale-up + fade
-                    if (p < 0.45) {
-                        const outP = p / 0.45;
+                    // Outgoing: scale-up + fade over first 60%
+                    if (p < 0.6) {
+                        const outP = p / 0.6;
                         const fade = 1 - outP * outP;
                         setFont(currFont, 1 + outP * (C.FONT_SCALE_OUT_MAX - 1));
-                        ctx.fillStyle = `rgba(255, 248, 230, ${textP * fade})`;
-                        drawGlowText(currFont.text, cx, belowY + currFont.y * DPR, textP * fade);
+                        ctx.fillStyle = `${flashColor} ${textP * fade})`;
+                        drawGlowText(currFont.text, cx, belowY + currFont.y * DPR, textP * fade + burstGlow);
                     }
-                    // Incoming: grows in after a brief gap
-                    const inP = Math.max(0, (p - 0.5) / 0.5);
+                    // Incoming: scale-in from 35%, overshoots then settles
+                    const inP = Math.max(0, (p - 0.35) / 0.65);
                     if (inP > 0) {
                         const eased = inP * inP * (3 - 2 * inP);
-                        setFont(nextFont, eased);
-                        ctx.fillStyle = `rgba(255, 248, 230, ${textP * eased})`;
-                        drawGlowText(nextFont.text, cx, belowY + nextFont.y * DPR, textP * eased);
+                        const overshoot = 1 + 0.14 * Math.sin(inP * Math.PI);
+                        setFont(nextFont, (0.7 + eased * 0.3) * overshoot);
+                        ctx.fillStyle = `${flashColor} ${textP * eased})`;
+                        drawGlowText(nextFont.text, cx, belowY + nextFont.y * DPR, textP * eased + burstGlow);
                     }
                 }
             }
@@ -659,18 +843,10 @@ window.App = window.App || {};
                     App.Supernova.trigger(cx, cy, orbMaxRadius, sparkles);
                 }
                 ctx.globalAlpha = photoP * textP;
-                const photo = App.Cache.circularPhoto(babyImg, orbMaxRadius);
-                ctx.drawImage(photo, cx - orbMaxRadius, cy - orbMaxRadius);
+                const photoRadius = orbMaxRadius * 0.92;
+                const photo = App.Cache.circularPhoto(babyImg, photoRadius);
+                ctx.drawImage(photo, cx - photoRadius, cy - photoRadius);
                 ctx.globalAlpha = 1;
-
-                // Soft ambient glow around the photo
-                const glowR = orbMaxRadius * 1.6;
-                const photoGlow = ctx.createRadialGradient(cx, cy, orbMaxRadius * 0.8, cx, cy, glowR);
-                photoGlow.addColorStop(0, `rgba(255, 200, 100, ${photoP * 0.08})`);
-                photoGlow.addColorStop(0.5, `rgba(255, 180, 80, ${photoP * 0.04})`);
-                photoGlow.addColorStop(1, 'rgba(255, 150, 50, 0)');
-                ctx.beginPath(); ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
-                ctx.fillStyle = photoGlow; ctx.fill();
             }
             const _rd = performance.now();
 
@@ -681,7 +857,7 @@ window.App = window.App || {};
                 const coreProgress = App.DualCore.getFlightProgress();
                 const dateP = easeOutQuint(Math.min(1, Math.max(0, (coreProgress - 0.25) / 0.3)));
                 if (dateP > 0) {
-                    ctx.font = `200 ${dateSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
+                    ctx.font = `300 ${dateSize}px -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif`;
                     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                     ctx.fillStyle = `rgba(255, 240, 210, ${textP * dateP * 0.5})`;
                     ctx.fillText(C.BIRTH_DATE, cx, dateY);
@@ -709,8 +885,8 @@ window.App = window.App || {};
             }
         }
 
-        // Footer: persistent once fully revealed (skip if reveal-block already drew it)
-        if (App.Footer.isComplete() && (footerWasComplete || !(revealProgress > 0))) {
+        // Footer: persistent once reveal milestone is reached
+        if (State.isComplete && (footerWasComplete || !(revealProgress > 0))) {
             App.Footer.draw(ctx, time, 1, fontSize, cx, H);
         }
 
@@ -728,16 +904,38 @@ window.App = window.App || {};
             const times = []; for (let i = 1; i < _t.length; i++) times.push(_t[i] - _t[i-1]);
             const total = _t[_t.length - 1] - _t[0];
             const fps = 1000 / Math.max(1, dt);
-            if (!window._perfHistory) window._perfHistory = { totals: [], sections: [] };
+            if (!window._perfHistory) window._perfHistory = { totals: [], sections: [], _lastSpike: 0 };
             window._perfHistory.totals.push(total); window._perfHistory.sections.push(times);
             if (window._perfHistory.totals.length > 60) { window._perfHistory.totals.shift(); window._perfHistory.sections.shift(); }
+
+            // Log spikes: any section >1ms, throttled to once per second
+            if (now - (window._perfHistory._lastSpike || 0) > 1000) {
+                for (let si = 0; si < sections.length; si++) {
+                    if (times[si] > 1.5) {
+                        window._perfHistory._lastSpike = now;
+                        App.dbgw('PERF_SPIKE: ' + sections[si] + '=' + times[si].toFixed(2) + 'ms'
+                            + ' | frame=' + total.toFixed(2) + 'ms'
+                            + ' fps=' + fps.toFixed(0)
+                            + ' particles=' + App.Particles.aliveCount
+                            + ' sparkles=' + sparkles.length
+                            + ' compression=' + App.Supernova.compression.toFixed(3)
+                            + ' flash=' + App.Supernova.flash.toFixed(3)
+                            + ' progress=' + progress.toFixed(3)
+                            + ' revealElapsed=' + (State.startTime > 0 ? (time - State.startTime).toFixed(2) : '0')
+                            + ' phase=' + State.phaseName
+                        );
+                        break;
+                    }
+                }
+            }
+
             const avgTotal = window._perfHistory.totals.reduce((a,b) => a+b, 0) / window._perfHistory.totals.length;
             const avgSections = sections.map((_, idx) => { let sum = 0, count = 0; window._perfHistory.sections.forEach(s => { if (s[idx] !== undefined) { sum += s[idx]; count++; } }); return count > 0 ? sum / count : 0; });
             let worstIdx = 0; avgSections.forEach((v, i) => { if (v > avgSections[worstIdx]) worstIdx = i; });
             ctx.font = `${11 * DPR}px monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
             ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, 320 * DPR, 85 * DPR);
             ctx.fillStyle = fps > 50 ? '#4a4' : fps > 30 ? '#aa4' : '#a44';
-            ctx.fillText(`FPS: ${fps.toFixed(0)}  Frame: ${total.toFixed(1)}ms  Avg: ${avgTotal.toFixed(1)}ms  Particles: ${App.Particles.aliveCount}`, 8 * DPR, 6 * DPR);
+            ctx.fillText(`FPS: ${fps.toFixed(0)}  Frame: ${total.toFixed(1)}ms  Avg: ${avgTotal.toFixed(1)}ms  Particles: ${App.Particles.aliveCount}  Energy: ${orbEnergy.toFixed(1)}`, 8 * DPR, 6 * DPR);
             let y = 22 * DPR;
             sections.forEach((name, i) => { const ms = avgSections[i] || 0; const bar = Math.min(200, ms * 20); const isW = i === worstIdx && ms > 1; ctx.fillStyle = isW ? '#f84' : '#8a8'; ctx.fillRect(8 * DPR, y, bar * DPR, 9 * DPR); ctx.fillStyle = isW ? '#fca' : '#cec'; ctx.fillText(`${name}: ${ms.toFixed(1)}ms`, (bar + 12) * DPR + 8 * DPR, y - 1); y += 12 * DPR; });
         }

@@ -2,7 +2,6 @@ window.App = window.App || {};
 
 App.WaveModels = {
     states: null,
-    _noiseBuf: null,
 
     init() {
         this.states = [];
@@ -40,8 +39,8 @@ App.WaveModels = {
     // freq: spatial frequency multiplier; phase: offset (radians); baseAmplitude: pixels
     getDisplacement(stringIdx, t, time, baseAmplitude, freq, phase) {
         const state = this.states[stringIdx];
-        const envelope = Math.sin(t * Math.PI);
-        let d = Math.sin(t * freq * Math.PI * 4 + time * (2 + stringIdx * 0.5) + phase) * baseAmplitude * envelope;
+        const animSpeed = App.STRING_ANIM_SPEED;
+        let d = Math.sin(t * freq * Math.PI * 4 + time * animSpeed + phase) * baseAmplitude;
 
         for (let i = 0, len = state.waves.length; i < len; i++) {
             const w = state.waves[i];

@@ -7,8 +7,9 @@ App.STRING_COLORS = [
     [200, 140, 110],
     [220, 170, 130],
 ];
-App.STRING_FREQS = [1.0, 1.5, 2.0, 2.5];
-App.STRING_PHASES = [0, 0.8, 1.6, 2.4];
+App.STRING_FREQS = [1.0, 1.15, 1.3, 1.45];
+App.STRING_PHASES = [0, 1.1, 2.5, 3.8];
+App.STRING_ANIM_SPEED = 2.2;
 App.DPR = Math.min(window.devicePixelRatio, 2);
 App.W = 0;
 App.H = 0;
@@ -20,3 +21,14 @@ App.randomColor = function() { return App.STRING_COLORS[Math.floor(Math.random()
 App.baseFont = function(W, H) { return Math.min(W * App.Config.FONT_BASE_W, H * App.Config.FONT_BASE_H); };
 
 App.NAME_LETTERS = ['R', 'a', 'a', 'g', 'a'];
+
+// Fetch LAN IP from dev server for mobile testing
+(function() {
+    window._lanUrl = '';
+    fetch('/ip').then(function(r) { return r.text(); }).then(function(ip) {
+        window._lanUrl = 'http://' + ip + ':' + (location.port || '8080');
+    }).catch(function() {
+        window._lanUrl = location.origin;
+    });
+})();
+

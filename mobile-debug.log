@@ -1,0 +1,123 @@
+=== New session 02:43:06 ===
+
+--- 02:43:06 ---
+[LOG] BEACON_INIT: page loaded, DPR=2, screen=1512x982
+
+--- 02:43:09 ---
+[LOG] MILESTONE: user tapped start overlay — initializing audio
+[LOG] AUDIO: AudioContext created, state=suspended
+[LOG] AUDIO: resume called, state=suspended
+[LOG] AUDIO: initialized, sampleRate=48000 state=suspended
+[LOG] AUDIO: drone playing
+[LOG] AUDIO: melody pre-started (silent)
+[LOG] AUDIO: state changed to running
+
+--- 02:43:12 ---
+[LOG] STRUM: string=1 y=0.53 speed=1.00
+[LOG] STRUM: string=1 y=0.62 speed=0.77
+[LOG] STRUM: string=1 y=0.62 speed=0.80
+[LOG] SCROLL: progress=0.039 scroll=232/6006
+[LOG] SCROLL: progress=0.086 scroll=517/6006
+[LOG] SCROLL: progress=0.187 scroll=1124/6006
+[LOG] SCROLL: progress=0.247 scroll=1485/6006
+[LOG] SCROLL: progress=0.281 scroll=1687/6006
+[LOG] SCROLL: progress=0.343 scroll=2058/6006
+[LOG] SCROLL: progress=0.380 scroll=2283/6006
+[LOG] SCROLL: progress=0.431 scroll=2590/6006
+[LOG] SCROLL: progress=0.490 scroll=2945/6006
+[LOG] SCROLL: progress=0.532 scroll=3198/6006
+[LOG] SCROLL: progress=0.589 scroll=3538/6006
+[LOG] SCROLL: progress=0.640 scroll=3844/6006
+[LOG] SCROLL: progress=0.683 scroll=4105/6006
+[LOG] SCROLL: progress=0.735 scroll=4417/6006
+[LOG] MILESTONE: reveal started, phase=idle
+[LOG] SWARA: Sa (0)
+[LOG] AUDIO: playLetterChime(0) ctxState=running
+[LOG] SCROLL: progress=0.782 scroll=4694/6006
+
+--- 02:43:15 ---
+[LOG] SCROLL: progress=0.827 scroll=4968/6006
+[LOG] LETTER: "R" materialized (0/4)
+[LOG] SWARA: Re (1)
+[LOG] AUDIO: playLetterChime(1) ctxState=running
+[LOG] SWARA: Ga (2)
+[LOG] AUDIO: playLetterChime(2) ctxState=running
+[LOG] LETTER: "a" materialized (1/4)
+[LOG] SWARA: Ma (3)
+[LOG] AUDIO: playLetterChime(3) ctxState=running
+
+--- 02:43:18 ---
+[LOG] SCROLL: progress=0.879 scroll=5280/6006
+[LOG] SCROLL: progress=0.929 scroll=5578/6006
+[LOG] LETTER: "a" materialized (2/4)
+[LOG] SWARA: Pa (4)
+[LOG] AUDIO: playLetterChime(4) ctxState=running
+[LOG] SCROLL: progress=0.975 scroll=5857/6006
+[LOG] SWARA: Dha (5)
+[LOG] AUDIO: playLetterChime(5) ctxState=running
+[LOG] LETTER: "g" materialized (3/4)
+[LOG] SWARA: Ni (6)
+[LOG] AUDIO: playLetterChime(6) ctxState=running
+
+--- 02:43:21 ---
+[LOG] SWARA: Sa' (7)
+[LOG] AUDIO: playLetterChime(7) ctxState=running
+[LOG] LETTER: "a" materialized (4/4)
+[LOG] AUDIO: compression build started
+
+--- 02:43:27 ---
+[LOG] MILESTONE: SUPERNOVA BURST — photo revealed
+[LOG] AUDIO: stopCompression
+[LOG] AUDIO: playBurst — ctxState=running
+[LOG] AUDIO: playSingingBowl — ctxState=running
+[LOG] AUDIO: startMelody — ctxState=running
+
+--- 02:43:30 ---
+[LOG] SCROLL: progress=0.962 scroll=5780/6006
+[LOG] SCROLL: progress=0.916 scroll=5500/6006
+[LOG] SCROLL: progress=0.849 scroll=5099/6006
+[LOG] SCROLL: progress=0.814 scroll=4890/6006
+[LOG] SCROLL: progress=0.751 scroll=4511/6006
+[LOG] SCROLL: progress=0.723 scroll=4340/6006
+[LOG] SCROLL: progress=0.671 scroll=4032/6006
+[LOG] SCROLL: progress=0.605 scroll=3634/6006
+[LOG] SCROLL: progress=0.565 scroll=3395/6006
+[LOG] SCROLL: progress=0.511 scroll=3071/6006
+[LOG] SCROLL: progress=0.464 scroll=2788/6006
+[LOG] SCROLL: progress=0.424 scroll=2546/6006
+[LOG] SCROLL: progress=0.371 scroll=2231/6006
+[LOG] SCROLL: progress=0.324 scroll=1947/6006
+[LOG] SCROLL: progress=0.325 scroll=1952/6006
+[LOG] SCROLL: progress=0.377 scroll=2262/6006
+[LOG] SCROLL: progress=0.427 scroll=2563/6006
+[LOG] SCROLL: progress=0.476 scroll=2856/6006
+[LOG] SCROLL: progress=0.525 scroll=3154/6006
+
+--- 02:43:48 ---
+[LOG] SCROLL: progress=0.522 scroll=3135/6006
+[LOG] SCROLL: progress=0.474 scroll=2845/6006
+[LOG] SCROLL: progress=0.424 scroll=2547/6006
+[LOG] SCROLL: progress=0.368 scroll=2211/6006
+[LOG] SCROLL: progress=0.322 scroll=1935/6006
+[LOG] SCROLL: progress=0.327 scroll=1963/6006
+
+--- 02:43:51 ---
+[LOG] SCROLL: progress=0.379 scroll=2279/6006
+[LOG] SCROLL: progress=0.427 scroll=2565/6006
+[LOG] SCROLL: progress=0.425 scroll=2550/6006
+
+--- 02:44:27 ---
+[LOG] SCROLL: progress=0.429 scroll=2576/6006
+
+--- 02:44:45 ---
+[LOG] SCROLL: progress=0.491 scroll=2946/6006
+[LOG] SCROLL: progress=0.589 scroll=3539/6006
+[LOG] SCROLL: progress=0.627 scroll=3763/6006
+[LOG] SCROLL: progress=0.693 scroll=4164/6006
+[LOG] SCROLL: progress=0.751 scroll=4511/6006
+[LOG] MILESTONE: reveal started, phase=complete
+[LOG] SCROLL: progress=0.777 scroll=4668/6006
+[LOG] SCROLL: progress=0.847 scroll=5087/6006
+[LOG] SCROLL: progress=0.889 scroll=5339/6006
+[LOG] SCROLL: progress=0.928 scroll=5572/6006
+[LOG] SCROLL: progress=0.980 scroll=5888/6006

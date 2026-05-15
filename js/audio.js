@@ -1,17 +1,21 @@
 window.App = window.App || {};
 
+const AUDIO_PHASE = { UNINITIALIZED: 0, PLAYING: 1, COMPRESSION: 2, MELODY: 3 };
+const AUDIO_PHASE_NAME = ['uninitialized', 'playing', 'compression', 'melody'];
+
 App.Audio = {
     audioCtx: null,
     droneGain: null,
     melodyGain: null,
     droneFilter: null,
     masterGain: null,
-    started: false,
+    phase: AUDIO_PHASE.UNINITIALIZED,
     muted: false,
-    _melodyPlaying: false,
     lastUpdate: 0,
     droneAudio: null,
     melodyAudio: null,
+
+    get phaseName() { return AUDIO_PHASE_NAME[this.phase]; },
 
     // Sa Re Ga Ma Pa Dha Ni Sa' — just intonation ratios
     SWARA_RATIOS: [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2],
@@ -21,7 +25,6 @@ App.Audio = {
     PENTATONIC_RATIOS: [1, 5/4, 3/2, 2, 5/2, 3, 4],
 
     // Compression sound state
-    _compressionActive: false,
     _noiseSource: null,
     _noiseBP: null,
     _noiseGain: null,
@@ -44,7 +47,7 @@ App.Audio = {
     },
 
     init(muteBtn) {
-        if (this.started) { App.dbg('AUDIO: init skipped — already started'); return; }
+        if (this.phase !== AUDIO_PHASE.UNINITIALIZED) { App.dbg('AUDIO: init skipped — already started'); return; }
         this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         App.dbg('AUDIO: AudioContext created, state=' + this.audioCtx.state);
 
@@ -90,7 +93,8 @@ App.Audio = {
             App.dbge('AUDIO: melody pre-start FAILED — ' + e.message);
         });
 
-        this.started = true;
+        this.phase = AUDIO_PHASE.PLAYING;
+        this._ensureChimeReverb();
         App.dbg('AUDIO: initialized, sampleRate=' + this.audioCtx.sampleRate + ' state=' + this.audioCtx.state);
         if (muteBtn) muteBtn.classList.add('visible');
     },
@@ -99,11 +103,11 @@ App.Audio = {
     STRING_BRIGHTNESS: [0.05, 0.15, 0.3, 0.5],
 
     playNote(normalizedY, velocity, stringIdx) {
-        if (!this.started || this.muted) {
-            App.dbg('AUDIO: playNote blocked — started=' + this.started + ' muted=' + this.muted + ' ctxState=' + (this.audioCtx ? this.audioCtx.state : 'none'));
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) {
+            App.dbg('AUDIO: playNote blocked — phase=' + this.phaseName + ' muted=' + this.muted + ' ctxState=' + (this.audioCtx ? this.audioCtx.state : 'none'));
             return;
         }
-        if (this._melodyPlaying) {
+        if (this.phase === AUDIO_PHASE.MELODY) {
             this._playShimmerNote(normalizedY, velocity, stringIdx);
         } else {
             this._playBaseNote(normalizedY, velocity, stringIdx);
@@ -223,52 +227,132 @@ App.Audio = {
     // Sustained drone tones from letter reveals (persist until compression ends)
     _letterDrones: [],
 
-    // Letter reveal — percussive impact + sustained drone layer
+    // Shared reverb for letter chimes (created once, reused)
+    _chimeReverb: null,
+    _chimeReverbGain: null,
+
+    _ensureChimeReverb() {
+        if (this._chimeReverb) return;
+        const ctx = this.audioCtx;
+        const length = ctx.sampleRate * 2.5;
+        const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+        for (let ch = 0; ch < 2; ch++) {
+            const data = buffer.getChannelData(ch);
+            for (let i = 0; i < length; i++) {
+                const t = i / ctx.sampleRate;
+                data[i] = (Math.random() * 2 - 1) * Math.exp(-t * 1.8) * 0.35;
+            }
+        }
+        this._chimeReverb = ctx.createConvolver();
+        this._chimeReverb.buffer = buffer;
+        this._chimeReverbGain = ctx.createGain();
+        this._chimeReverbGain.gain.value = 0.4;
+        this._chimeReverb.connect(this._chimeReverbGain);
+        this._chimeReverbGain.connect(this.masterGain);
+    },
+
+    // Letter reveal — heartbeat morphing into tone, panning left→right with letters
     playLetterChime(letterIndex) {
-        if (!this.started || this.muted) {
-            App.dbg('AUDIO: playLetterChime blocked — started=' + this.started + ' muted=' + this.muted);
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) {
+            App.dbg('AUDIO: playLetterChime blocked — phase=' + this.phaseName + ' muted=' + this.muted);
             return;
         }
         App.dbg('AUDIO: playLetterChime(' + letterIndex + ') ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
+        this._ensureChimeReverb();
 
-        const freq = 220 * this.SWARA_RATIOS[Math.min(letterIndex, 7)];
+        const idx = Math.min(letterIndex, 7);
+        const freq = 240 * this.SWARA_RATIOS[idx];
+        const toneBlend = idx / 7; // 0 = pure heartbeat, 1 = pure tone
 
-        // Sub thump (gets deeper with each letter)
-        const subFreq = 60 - letterIndex * 5;
-        const sub = ctx.createOscillator();
-        sub.type = 'sine';
-        sub.frequency.setValueAtTime(subFreq * 2, t);
-        sub.frequency.exponentialRampToValueAtTime(subFreq, t + 0.08);
-        const subGain = ctx.createGain();
-        const hitVol = 0.2 + letterIndex * 0.04;
-        subGain.gain.setValueAtTime(hitVol, t);
-        subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-        sub.connect(subGain);
-        subGain.connect(this.masterGain);
-        sub.start(t);
-        sub.stop(t + 0.35);
+        // Spatial position: left → right following letter positions
+        const pan = (idx / 7) * 1.4 - 0.7; // -0.7 to +0.7
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = pan;
 
-        // Sustained drone layer
+        // --- Heartbeat (fades out across the sequence) ---
+        const beatVol = 0.25 * (1 - toneBlend * 0.8);
+        const beat = ctx.createOscillator();
+        beat.type = 'sine';
+        beat.frequency.setValueAtTime(80, t);
+        beat.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+        const beatGain = ctx.createGain();
+        // Double-thump envelope (lub-dub)
+        beatGain.gain.setValueAtTime(beatVol, t);
+        beatGain.gain.exponentialRampToValueAtTime(beatVol * 0.5, t + 0.08);
+        beatGain.gain.setValueAtTime(beatVol * 0.6, t + 0.15);
+        beatGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        beat.connect(beatGain);
+        beatGain.connect(panner);
+        beat.start(t);
+        beat.stop(t + 0.45);
+
+        // --- Tonal layer (fades in across the sequence) ---
+        const toneVol = 0.18 * toneBlend + 0.04;
+
+        const osc1 = ctx.createOscillator();
+        osc1.type = 'sine';
+        osc1.frequency.value = freq;
+
+        const osc2 = ctx.createOscillator();
+        osc2.type = 'sine';
+        osc2.frequency.value = freq * 1.003;
+
+        const osc3 = ctx.createOscillator();
+        osc3.type = 'sine';
+        osc3.frequency.value = freq * 2;
+
+        // Fifth for warmth (tanpura-like)
+        const osc4 = ctx.createOscillator();
+        osc4.type = 'sine';
+        osc4.frequency.value = freq * 1.5;
+
+        const toneGain = ctx.createGain();
+        // Attack softens as tone increases (heartbeat is punchy, tone is smooth)
+        const attackTime = 0.02 + toneBlend * 0.06;
+        toneGain.gain.setValueAtTime(0, t);
+        toneGain.gain.linearRampToValueAtTime(toneVol, t + attackTime);
+        toneGain.gain.setValueAtTime(toneVol, t + 0.3);
+        toneGain.gain.exponentialRampToValueAtTime(toneVol * 0.4, t + 1.2);
+        toneGain.gain.exponentialRampToValueAtTime(0.001, t + 2.5 + toneBlend);
+
+        const g2 = ctx.createGain(); g2.gain.value = 0.5;
+        const g3 = ctx.createGain(); g3.gain.value = 0.15 + toneBlend * 0.15;
+        const g4 = ctx.createGain(); g4.gain.value = 0.15;
+
+        osc1.connect(toneGain);
+        osc2.connect(g2); g2.connect(toneGain);
+        osc3.connect(g3); g3.connect(toneGain);
+        osc4.connect(g4); g4.connect(toneGain);
+        toneGain.connect(panner);
+        toneGain.connect(this._chimeReverb);
+
+        // Panner → master
+        panner.connect(this.masterGain);
+
+        osc1.start(t); osc2.start(t); osc3.start(t); osc4.start(t);
+        osc1.stop(t + 3.6); osc2.stop(t + 3.6); osc3.stop(t + 3.6); osc4.stop(t + 3.6);
+
+        // --- Sustained drone layer ---
         const droneOsc = ctx.createOscillator();
         droneOsc.type = 'sine';
         droneOsc.frequency.value = freq;
 
         const droneOsc2 = ctx.createOscillator();
         droneOsc2.type = 'sine';
-        droneOsc2.frequency.value = freq * 1.002; // slight beating
+        droneOsc2.frequency.value = freq * 1.002;
 
         const droneGain = ctx.createGain();
         droneGain.gain.setValueAtTime(0, t);
-        droneGain.gain.linearRampToValueAtTime(0.06, t + 0.3);
+        droneGain.gain.linearRampToValueAtTime(0.07, t + 0.4);
 
-        const g2 = ctx.createGain();
-        g2.gain.value = 0.7;
+        const dg2 = ctx.createGain();
+        dg2.gain.value = 0.7;
 
         droneOsc.connect(droneGain);
-        droneOsc2.connect(g2);
-        g2.connect(droneGain);
+        droneOsc2.connect(dg2);
+        dg2.connect(droneGain);
         droneGain.connect(this.masterGain);
 
         droneOsc.start(t);
@@ -291,17 +375,17 @@ App.Audio = {
 
     // Stop all reveal sounds (called on scroll-away reset)
     stopRevealSounds() {
-        if (!this.started) return;
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED) return;
         this._stopLetterDrones();
-        if (this._compressionActive) this.stopCompression();
+        if (this.phase === AUDIO_PHASE.COMPRESSION) this.stopCompression();
     },
 
     // Compression build — reverse swell + accelerating pulse + harmonic stacking
     startCompression() {
-        if (!this.started || this.muted || this._compressionActive) return;
+        if (this.phase !== AUDIO_PHASE.PLAYING || this.muted) return;
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
-        this._compressionActive = true;
+        this.phase = AUDIO_PHASE.COMPRESSION;
         App.dbg('AUDIO: compression build started');
 
         // Rising noise sweep (reuse cached buffer)
@@ -350,7 +434,7 @@ App.Audio = {
     },
 
     updateCompression(compression) {
-        if (!this._compressionActive) return;
+        if (this.phase !== AUDIO_PHASE.COMPRESSION) return;
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
 
@@ -405,9 +489,9 @@ App.Audio = {
     },
 
     stopCompression() {
-        if (!this._compressionActive) return;
+        if (this.phase !== AUDIO_PHASE.COMPRESSION) return;
         App.dbg('AUDIO: stopCompression');
-        this._compressionActive = false;
+        this.phase = AUDIO_PHASE.PLAYING;
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
 
@@ -429,7 +513,7 @@ App.Audio = {
 
     // Supernova burst — layered impact: sub boom + crack + shimmer
     playBurst() {
-        if (!this.started || this.muted) { App.dbg('AUDIO: playBurst blocked'); return; }
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) { App.dbg('AUDIO: playBurst blocked'); return; }
         App.dbg('AUDIO: playBurst — ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
@@ -488,7 +572,7 @@ App.Audio = {
 
     // Singing bowl — peaceful resolution after burst
     playSingingBowl() {
-        if (!this.started || this.muted) { App.dbg('AUDIO: playSingingBowl blocked'); return; }
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) { App.dbg('AUDIO: playSingingBowl blocked'); return; }
         App.dbg('AUDIO: playSingingBowl — ctxState=' + this.audioCtx.state);
         const ctx = this.audioCtx;
         const t = ctx.currentTime;
@@ -513,31 +597,72 @@ App.Audio = {
 
     // Start melody playback after supernova
     startMelody() {
-        if (!this.started || this.muted) { App.dbg('AUDIO: startMelody blocked'); return; }
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) { App.dbg('AUDIO: startMelody blocked'); return; }
         App.dbg('AUDIO: startMelody — ctxState=' + this.audioCtx.state);
         this.melodyAudio.currentTime = 0;
         const t = this.audioCtx.currentTime;
         this.melodyGain.gain.setValueAtTime(0, t);
         this.melodyGain.gain.linearRampToValueAtTime(0.6, t + 2.0);
-        this._melodyPlaying = true;
+        this.phase = AUDIO_PHASE.MELODY;
     },
 
     update(progress) {
-        if (!this.started) return;
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED) return;
         const C = App.Config;
         const now = Date.now();
         if (now - this.lastUpdate < C.AUDIO_UPDATE_INTERVAL) return;
         this.lastUpdate = now;
 
         const t = this.audioCtx.currentTime;
-        // Duck drone heavily once melody is playing
-        const revealDuck = this._melodyPlaying ? 0.08 : (progress > 0.85 ? 0.15 : 1.0);
+        const melodyActive = this.phase === AUDIO_PHASE.MELODY;
+        const revealDuck = melodyActive ? 0.08 : (progress > 0.85 ? 0.15 : 1.0);
         const droneVol = Math.min(0.7, progress * 3 + 0.1) * revealDuck;
         this.droneGain.gain.setTargetAtTime(droneVol, t, 0.3);
         const filterFreq = C.DRONE_FILTER_MIN + progress * (C.DRONE_FILTER_MAX - C.DRONE_FILTER_MIN);
         this.droneFilter.frequency.setTargetAtTime(filterFreq, t, 0.3);
-        const melodyVol = this._melodyPlaying ? Math.max(0, Math.min(0.8, (progress - C.MELODY_FADE_START) / (C.MELODY_FADE_END - C.MELODY_FADE_START))) : 0;
+        const melodyVol = melodyActive ? Math.max(0, Math.min(0.8, (progress - C.MELODY_FADE_START) / (C.MELODY_FADE_END - C.MELODY_FADE_START))) : 0;
         this.melodyGain.gain.setTargetAtTime(melodyVol, t, 0.5);
+    },
+
+    _lastChimeTime: 0,
+
+    playCollisionChime(proximity) {
+        if (this.phase === AUDIO_PHASE.UNINITIALIZED || this.muted) return;
+        const ctx = this.audioCtx;
+        const now = ctx.currentTime;
+        if (now - this._lastChimeTime < 0.4) return;
+        this._lastChimeTime = now;
+
+        const t = now;
+        const baseFreq = 600 + proximity * 400;
+        const vol = 0.04 + proximity * 0.06;
+
+        const osc1 = ctx.createOscillator();
+        osc1.type = 'sine';
+        osc1.frequency.value = baseFreq;
+
+        const osc2 = ctx.createOscillator();
+        osc2.type = 'sine';
+        osc2.frequency.value = baseFreq * 1.5;
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(vol, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(vol * 0.3, t + 0.15);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+
+        const g2 = ctx.createGain();
+        g2.gain.value = 0.3;
+
+        osc1.connect(gain);
+        osc2.connect(g2);
+        g2.connect(gain);
+        gain.connect(this.masterGain);
+
+        osc1.start(t);
+        osc2.start(t);
+        osc1.stop(t + 0.65);
+        osc2.stop(t + 0.65);
     },
 
     toggleMute() {

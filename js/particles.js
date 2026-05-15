@@ -3,6 +3,7 @@ window.App = window.App || {};
 App.Particles = {
     pool: null,
     aliveCount: 0,
+    absorbedThisFrame: 0,
     spriteSheet: null,
     SPRITE_SIZES: [10, 20, 36, 56],
     SPRITE_ROTATIONS: [-0.5, -0.25, 0, 0.25, 0.5],
@@ -61,6 +62,17 @@ App.Particles = {
             if (Math.abs(SIZES[i] - targetSize) < Math.abs(SIZES[best] - targetSize)) best = i;
         }
         return best;
+    },
+
+    clearAll() {
+        for (let i = 0; i < this.POOL_SIZE; i++) this.pool[i].alive = false;
+        this.aliveCount = 0;
+    },
+
+    consumeAbsorbed() {
+        const count = this.absorbedThisFrame;
+        this.absorbedThisFrame = 0;
+        return count;
     },
 
     spawn(x, y, vx, vy, color, sizeOverride) {
@@ -126,7 +138,7 @@ App.Particles = {
                 const dy = cy - p.y;
                 const dist = dx * dx + dy * dy;
                 if (dist < orbRadius * orbRadius * 0.36) {
-                    p.alive = false; this.aliveCount = Math.max(0, this.aliveCount - 1); continue;
+                    p.alive = false; this.aliveCount = Math.max(0, this.aliveCount - 1); this.absorbedThisFrame++; continue;
                 }
                 const strength = pullStrength * (C.ORB_PULL_BASE + orbPull * C.ORB_PULL_GROW);
                 p.vx += dx * strength;
@@ -185,6 +197,9 @@ App.Particles = {
             const size = p.size * DPR * sizePulse * birthScale;
             if (size <= 0) continue;
 
+            // Depth factor: 0 (smallest/farthest) → 1 (largest/closest)
+            const depth = (p.size - C.PARTICLE_SIZE_MIN) / (C.PARTICLE_SIZE_MAX - C.PARTICLE_SIZE_MIN);
+
             // Trail
             if (p.tLen > 2) {
                 const startIdx = (p.tIdx - p.tLen + 5) % 5;
@@ -194,27 +209,31 @@ App.Particles = {
                     ctx.lineTo(p.tx[(startIdx + t) % 5], p.ty[(startIdx + t) % 5]);
                 }
                 const [cr, cg, cb] = COLORS[p.colorIdx] || COLORS[0];
-                ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.25})`;
-                ctx.lineWidth = size * 0.5;
+                const trailAlpha = alpha * (0.1 + depth * 0.25);
+                ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${trailAlpha})`;
+                ctx.lineWidth = size * (0.3 + depth * 0.5);
                 ctx.lineCap = 'round';
                 ctx.stroke();
             }
 
-            // Speed streak
+            // Speed streak — comet tail scales with depth
+            if (p.tLen > 1) {
             const speedSqDraw = p.vx * p.vx + p.vy * p.vy;
             if (speedSqDraw > 4 * DPR * DPR) {
                 const speed = Math.sqrt(speedSqDraw);
-                const streakLen = Math.min(speed * 3, size * 8);
+                const streakLen = Math.min(speed * (2 + depth * 4), size * (5 + depth * 8));
                 const nx = -p.vx / speed;
                 const ny = -p.vy / speed;
                 const [sr, sg, sb] = COLORS[p.colorIdx] || COLORS[0];
                 ctx.beginPath();
                 ctx.moveTo(p.x, p.y);
                 ctx.lineTo(p.x + nx * streakLen, p.y + ny * streakLen);
-                ctx.strokeStyle = `rgba(${sr}, ${sg}, ${sb}, ${alpha * 0.15})`;
-                ctx.lineWidth = size * 0.3;
+                const streakAlpha = alpha * (0.08 + depth * 0.15);
+                ctx.strokeStyle = `rgba(${sr}, ${sg}, ${sb}, ${streakAlpha})`;
+                ctx.lineWidth = size * (0.15 + depth * 0.3);
                 ctx.lineCap = 'round';
                 ctx.stroke();
+            }
             }
 
             // Twinkle + sprite
