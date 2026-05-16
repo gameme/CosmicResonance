@@ -210,7 +210,7 @@ App.Config = {
     CYCLE_FONTS: [
         { weight: '', family: 'Nistha, Georgia, serif', text: 'Grahit', scale: 1.0, y: 0 },
         { weight: '300 ', family: '-apple-system, "SF Pro Display", "Helvetica Neue", sans-serif', text: 'Grahit', scale: 0.9, y: -15 },
-        { weight: '', family: 'AnekKannada, serif', text: 'ಗೃಹೀತ', scale: 0.85, y: 10 },
+        { weight: '', family: 'AnekKannada, serif', text: 'ಹುಚ್ಚಾ', scale: 0.85, y: 10 },
         { weight: '', family: 'Akasha, serif', text: 'गृहीत', scale: 1.25, y: 0 },
     ],
 
