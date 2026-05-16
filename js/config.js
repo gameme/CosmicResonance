@@ -240,8 +240,8 @@ App.Config = {
     AUDIO_UPDATE_INTERVAL: 200,  // ms between audio parameter updates; lower = smoother but more CPU
     DRONE_FILTER_MIN: 400,       // lowpass cutoff at scroll=0 (Hz); lower = more muffled start
     DRONE_FILTER_MAX: 4000,      // lowpass cutoff at scroll=1 (Hz); higher = brighter peak
-    MELODY_FADE_START: 0.2,      // scroll progress where melody begins fading in
-    MELODY_FADE_END:   0.5,      // scroll progress where melody reaches full volume
+    MELODY_FADE_START: 0.3,      // scroll progress where melody begins fading in (matches ORB_GROW start)
+    MELODY_FADE_END:   0.75,     // scroll progress where melody reaches full volume (matches ORB_GROW end)
 
     // --- Debug ---
     DEBUG: false,
