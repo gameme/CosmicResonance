@@ -27,9 +27,9 @@ Loading order (top-to-bottom in `index.html` script block), with what each modul
 | `js/particles.js` | Pooled particle system (pool size = `1.25 × MAX_PARTICLES`), pre-baked sprite sheet (4 colors × 4 sizes × 5 notes × 5 rotations). |
 | `js/supernova.js` | Compression curve, vortex spawn, burst trigger (flash/ring/shake/rays), space-time ripples, smoothed orb scale. |
 | `js/dualcore.js` | Two binary cores (gold + blue); orbit inside orb pre-burst, fly to footer 'i' dots post-burst, settle as candle flames. **IIFE module** — exposes `App.DualCore.draw/reset/getFlightProgress/getCorePositions`. |
-| `js/footer.js` | "Made with ❣️ in California by Shruti & Vinod" reveal state machine. **IIFE module**; emanates names from each 'i' position. Persistent glow gradient builds after settled. |
+| `js/footer.js` | "Made with ❣️ in California by Shruti & Vinod" reveal. **IIFE module**, stateless state machine (pure `deriveProgress(elapsed)`), emanates names from each 'i' position. Persistent glow gradient builds after settled — the only stateful pieces. |
 | `js/audio.js` | Tanpura drone, melody (HTMLAudio + WebAudio gain/filter), synthesized swara chimes, compression sound (noise+sub+harmonic stacking), burst (boom+crack+shimmer), singing bowl, post-reveal shimmer pentatonic. |
-| `js/main.js` | Reveal `State` machine, `sparkles`, `orbEnergy`, `_scaledTime`, `_experienceStartTime`, `fontCycleOffset`, glow text, god rays, font cycling. The orchestrator. |
+| `js/main.js` | Reveal `State` machine (incl. sticky `burstTime` footer anchor), `sparkles`, `orbEnergy`, `_scaledTime`, `_experienceStartTime`, `fontCycleOffset`, glow text, god rays, font cycling. The orchestrator. |
 
 ### Test harness
 `tests.html` runs ~100 in-browser assertions using **duplicated helper math** (not the production functions). Tests verify pool semantics, swara mapping, smoothstep boundaries, swept collision, wave bounce/prune, pluck decay/cap, font wrap, audio dispatch, harmonic count. Treat them as regression tests for the algorithms, not the integrated system.
@@ -106,20 +106,23 @@ PLAYING                                         MELODY — playNote dispatches s
 `MELODY` is **terminal**. There is no transition out — once melody starts, it stays. `Audio.playNote` dispatches per-phase: PLAYING → `_playBaseNote` (4 oscillators, swara just-intonation), MELODY → `_playShimmerNote` (pentatonic + 3s decay).
 
 ### 3. Footer (`STATE` enum in `footer.js`)
-```
-HIDDEN
-  ↓ stateTimer > primaryDelay (3.0s)
-REVEALING_PRIMARY  — "Made by ... Shruti" fades in (1.5s easeOutQuint)
-  ↓ primaryFadeDuration elapsed
-PRIMARY_VISIBLE  — Shruti emanates from 'i' (chars fan out, 0.4s descent + 1.0s emanation)
-  ↓ stateTimer > shiftDelay (2.0s)
-SHIFTING — text widens for "with ❣️" insertion; "& Vinod" reveals; Vinod emanates from 'i'
-  ↓ shiftP=1 ∧ revealRaw=1
-COMPLETE — heart pulses on heartbeat; persistent glow ramps in for both names
 
-(STATE.REVEALING_SECONDARY is enum-defined but unreachable — SHIFTING jumps directly to COMPLETE)
+**Stateless, derived from a single elapsed-time anchor.** The state machine is a pure function of `footerElapsed = max(0, _scaledTime − State.burstTime − PHOTO_FADE_DURATION)`. `State.burstTime` is captured once at burst and never moves; `footerElapsed` therefore advances monotonically in scaled real time, regardless of scroll position or whether a draw frame ran.
+
 ```
-**Re-entry behavior** (in `Footer.draw` / `Footer.markInactive`): `markInactive()` fires every frame from the main draw loop. If `Footer.draw()` is skipped a frame (revealProgress dropped to 0 mid-flight), `entryTimer` resets on next call to replay the envelope fade-in. `state` itself never regresses.
+elapsed < 0                                   → (pre-burst, not rendered)
+0 ≤ elapsed < primaryDelay (3.0s)              HIDDEN
+elapsed < primaryDelay + primaryFade (1.5s)    REVEALING_PRIMARY  (Shruti emanates from 'i')
+elapsed < primaryDelay + primaryFade
+        + shiftDelay (4.5s)                    PRIMARY_VISIBLE
+elapsed < primaryDelay + primaryFade
+        + shiftDelay + max(shiftDur, revealDur)  SHIFTING (with ❣️ inserts; & Vinod emanates)
+otherwise                                      COMPLETE  (heart pulses; persistent glow ramps in)
+```
+
+`App.Footer.tick(elapsed, dt)` runs every frame from the top of `main.js`'s draw loop. It refreshes `_lastElapsed` (consumed by `isPrimaryDone()` / `isSecondaryStarted()` queries from DualCore) and ticks the persistent `shrutiGlowP` / `vinodGlowP` accumulators while `settled` is true. Glow accumulators are the **only** stateful pieces left; the state machine itself never holds time.
+
+`App.Footer.draw` is then called unconditionally inside `if (State.isComplete)` post-block — there is **one** render path, no envelope fade-in, no re-entry detection. Scroll-up is invisible to the footer's clock by construction.
 
 ### 4. DualCore (`STATE` constant inside `dualcore.js` IIFE)
 ```
@@ -154,7 +157,7 @@ These are NOT enforced by structure — breaking them silently breaks the experi
 3. **DPR clamped to 2** (`App.DPR` in `shared.js`). On 3× retina the canvas would be 9× the pixel work — clamping keeps mobile performant.
 4. **Particle pool oversized** (`POOL_SIZE` in `Particles.init`): pool size = `1.25 × MAX_PARTICLES`. Provides headroom for the weakest-particle eviction path on overflow.
 5. **`_scaledTime` drives all visuals; `audioCtx.currentTime` drives all audio**. `Config.TIME_SCALE` only affects visual timing; audio is always at real time. Beware: with `TIME_SCALE != 1.0`, audio and visuals will desync. This is by design — used for animation tuning, not production.
-6. **`Footer.markInactive()` must be called every frame** (currently invoked at the top of the main draw loop). Without it, the footer's re-entry detection cannot tell when `draw()` was skipped, and the envelope fade-in won't replay on re-reveal.
+6. **`State.burstTime` is the footer's anchor** (set once in `markComplete(time)`, never moves; survives `State.reset()` because reset is suppressed when `isComplete`). The footer's elapsed-time clock is `time − State.burstTime − PHOTO_FADE_DURATION`. If `burstTime` ever drifts (e.g., re-set on re-entry), the footer animation will jump or restart.
 7. **Particle absorption uses squared-distance** (orb-absorb branch in `Particles.update`). The threshold `dist < orbRadius × 0.6` is implemented as `distSq < orbRadius² × 0.36` to avoid `sqrt` per particle. Tests verify this equivalence.
 8. **Pointer locks must clear on cross-over OR pointer movement >2px** (in `Strings.checkInteraction`). Without this, a finger held at rest on a string accumulates a single hit and stops responding even while moving slowly.
 9. **Audio reveal sounds must be stopped on scroll-up before reveal completes** (the main draw loop calls `State.reset()` when `revealProgress <= 0`, which calls `Audio.stopRevealSounds()`). Otherwise the harmonic stack and noise sweep persist with no visual context.
@@ -179,8 +182,8 @@ These are NOT enforced by structure — breaking them silently breaks the experi
                                                                 + isSecondaryStarted()
 ```
 
-- **`main.js`** owns the canonical reveal `State`. Subsystems do not maintain their own copy.
-- **DualCore reads from Footer**: `App.Footer.isPrimaryDone()`, `isSecondaryStarted()`, `TIMING`. The cores' descent timing is gated by where the footer state machine is, not by elapsed time. Intentional: avoids cores landing before the 'i' is visible.
+- **`main.js`** owns the canonical reveal `State` (including the sticky `burstTime` anchor) and ticks the footer every frame via `App.Footer.tick(elapsed, dt)` at the top of the draw loop — must run before `DualCore.draw` so its `isPrimaryDone()`/`isSecondaryStarted()` queries see fresh state. Subsystems do not maintain their own state copy.
+- **DualCore reads from Footer**: `App.Footer.isPrimaryDone()`, `isSecondaryStarted()`, `TIMING`. Footer queries answer from a cached elapsed time refreshed on each `tick()`. The cores' descent timing is gated by footer-state phase, not raw wall time. Intentional: avoids cores landing before the 'i' is visible.
 - **Strings produces** strum energy via `Strings.consumeStrumEnergy()` and absorbed-particle counts via `Particles.consumeAbsorbed()`. Both are **consume-once accumulators** — calling twice in one frame yields zero on the second call.
 - **Audio is fire-and-forget**: `Strings.checkInteraction → Audio.playNote`; swara timer in main → `Audio.playLetterChime`; photoBurst → `Audio.playBurst + playSingingBowl + startMelody`.
 - **Cache is read-only invalidation** on resize. Photo + heart-emoji bitmaps regenerate on next access.

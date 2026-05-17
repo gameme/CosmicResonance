@@ -115,6 +115,7 @@ window.App = window.App || {};
             _hintGlow = 0;
             hint.style.filter = '';
             hint.style.textShadow = '';
+            hint.style.transform = '';
         }
     }, { passive: true });
 
@@ -124,22 +125,46 @@ window.App = window.App || {};
         const W = App.W, H = App.H;
         const idleSec = (Date.now() - Math.max(_experienceStartTime, _lastScrollTime)) / 1000;
 
-        // Tier 1 (5s): hint brightens
+        // Tier 1 (5s+): hint brightens. Initial 3s ramp lifts brightness 1.0 → 1.8;
+        // a slower sustain ramp then keeps pushing past the plateau, so a long-idle
+        // viewer sees the hint progressively burn instead of locking at one level.
+        // Saturation warms up alongside, so the hint shifts noticeably warmer the
+        // longer the viewer waits.
         if (idleSec > HINT_TIER1_DELAY) {
             const t1 = Math.min(1, (idleSec - HINT_TIER1_DELAY) / 3);
+            const sustain = Math.min(1, (idleSec - HINT_TIER1_DELAY) / 25);
             _hintGlow = t1;
-            hint.style.filter = `brightness(${1 + t1 * 0.8})`;
+            const brightness = 1 + t1 * 0.8 + sustain * 1.4;       // peaks ~3.2×
+            const saturate = 1 + sustain * 0.6;                    // peaks 1.6×
+            hint.style.filter = `brightness(${brightness}) saturate(${saturate})`;
         } else {
             _hintGlow = 0;
             hint.style.filter = '';
         }
 
-        // Tier 2 (10s): warm glow aura
+        // Tier 2 (10s+): layered warm glow aura. Inner sharp halo + outer soft halo
+        // both keep deepening past the original 3s tier ramp. The same heartbeat
+        // sine drives the glow blur AND a subtle scale lerp on the text itself,
+        // so the hint visibly breathes as one element instead of the glow ringing
+        // around motionless type.
         if (idleSec > HINT_TIER2_DELAY) {
             const t2 = Math.min(1, (idleSec - HINT_TIER2_DELAY) / 3);
-            hint.style.textShadow = `0 0 ${8 + t2 * 12}px rgba(255, 200, 100, ${t2 * 0.6})`;
+            const sustain = Math.min(1, (idleSec - HINT_TIER2_DELAY) / 22);
+            const innerBlur = 8 + t2 * 14 + sustain * 22;          // 8 → 22 → 44 px
+            const outerBlur = innerBlur * 1.8;
+            const innerAlpha = Math.min(1, t2 * 0.6 + sustain * 0.4);
+            const outerAlpha = Math.min(0.85, t2 * 0.35 + sustain * 0.45);
+            const beat = Math.sin(idleSec * 1.4);                  // shared sine
+            const glowPulse = 1 + beat * 0.18 * sustain;           // ±0 → ±18% blur
+            const scalePulse = 1 + beat * 0.05 * sustain;          // ±0 → ±5% scale
+            hint.style.textShadow =
+                `0 0 ${innerBlur * glowPulse}px rgba(255, 215, 130, ${innerAlpha}),` +
+                `0 0 ${outerBlur * glowPulse}px rgba(255, 195, 100, ${outerAlpha})`;
+            // Compose with the CSS centering translate so the hint stays anchored.
+            hint.style.transform = `translateX(-50%) scale(${scalePulse})`;
         } else {
             hint.style.textShadow = '';
+            hint.style.transform = '';
         }
 
         // Arrow position (center-bottom of viewport, matching CSS .scroll-hint bottom:40px)
@@ -263,6 +288,7 @@ window.App = window.App || {};
             document.body.style.overflowX = 'hidden';
             startOverlay.classList.add('dismiss');
             _experienceStartTime = Date.now();
+            App._experienceStartTime = _experienceStartTime;
             setTimeout(function() { startOverlay.remove(); }, 2000);
         }, { once: true });
     }
@@ -338,10 +364,56 @@ window.App = window.App || {};
         cachedLetterPositions = [];
         let xOff = 0;
         for (let i = 0; i < letters.length; i++) {
-            cachedLetterPositions.push({ x: startX + xOff + widths[i] / 2, w: widths[i] });
+            const cx = startX + xOff + widths[i] / 2;
+            const w = widths[i];
+            // Joints: 3 high-curvature waypoints per letter, as dx/dy offsets relative to (cx, baselineY).
+            // Positive dy is below the baseline. Used by constellations to target burst-dot arrivals.
+            let joints;
+            switch (letters[i]) {
+                case 'R':
+                    joints = [
+                        { dx: -w * 0.30, dy: -fs * 0.45 },  // top of spine
+                        { dx:  w * 0.25, dy: -fs * 0.10 },  // top-right of bowl
+                        { dx:  w * 0.30, dy:  fs * 0.45 },  // base of leg
+                    ];
+                    break;
+                case 'a':
+                    joints = [
+                        { dx:  w * 0.25, dy: -fs * 0.25 },  // top of bowl
+                        { dx: -w * 0.25, dy:  fs * 0.05 },  // mid-left of bowl
+                        { dx:  w * 0.30, dy:  fs * 0.30 },  // bottom-right of bowl
+                    ];
+                    break;
+                case 'g':
+                    joints = [
+                        { dx:  w * 0.25, dy: -fs * 0.20 },  // top of bowl
+                        { dx: -w * 0.20, dy:  fs * 0.10 },  // bottom-left of bowl
+                        { dx:  w * 0.10, dy:  fs * 0.50 },  // descender end
+                    ];
+                    break;
+                default:
+                    // Fallback: 3 evenly distributed points along the letter's extent
+                    joints = [
+                        { dx: -w * 0.30, dy: -fs * 0.30 },
+                        { dx:  0,        dy:  0          },
+                        { dx:  w * 0.30, dy:  fs * 0.30 },
+                    ];
+            }
+            cachedLetterPositions.push({ x: cx, w, joints });
             xOff += widths[i];
         }
     }
+
+    App.cacheLetterMetrics = cacheLetterMetrics;
+
+    // Slot positions and font size for the constellations module.
+    App.getCachedLetterSlots = function() {
+        return cachedLetterPositions;
+    };
+
+    App.getConstellationFontSize = function() {
+        return cachedFontSize * App.Config.FONT_HERO;
+    };
 
     // Two-pass glow: soft outer halo + crisp inner glow, consistent across all phases.
     // `intensity` 0–1 controls glow strength (use for fade-in/out).
@@ -359,6 +431,32 @@ window.App = window.App || {};
         ctx.fillText(text, x, y);
         ctx.shadowBlur = 0;
     }
+
+    // Returns the highest chime index whose scheduled time is <= elapsed, or -1 if none.
+    function computeChimeIndex(elapsed, schedule) {
+        let idx = -1;
+        for (let i = 0; i < schedule.length; i++) {
+            if (schedule[i] <= elapsed) idx = i;
+            else break;
+        }
+        return idx;
+    }
+    App._computeChimeIndex = computeChimeIndex;
+
+    // §5.6 — two-threshold hysteresis for reveal commit/reset.
+    // A higher commit threshold than reset threshold prevents "ghost reveal"
+    // when the user scrolls just past the reveal boundary and back.
+    function stateShouldEnter(revealProgress) {
+        return revealProgress >= App.Config.REVEAL_COMMIT_THRESHOLD;
+    }
+
+    function stateShouldReset(revealProgress, isComplete) {
+        if (isComplete) return false; // sticky once complete
+        return revealProgress < App.Config.REVEAL_RESET_THRESHOLD;
+    }
+
+    App._stateShouldEnter = stateShouldEnter;
+    App._stateShouldReset = stateShouldReset;
 
     // God rays
     function drawGodRays(cx, cy, radius, intensity, time) {
@@ -400,6 +498,11 @@ window.App = window.App || {};
     const State = {
         phase: PHASE.IDLE,
         startTime: -1,
+        // Sticky timestamp captured the first time burst fires. Never re-set
+        // afterwards (State.enter rewinds startTime on re-entry post-burst,
+        // but burstTime is the canonical anchor for the footer's elapsed-time
+        // clock and must stay fixed).
+        burstTime: -1,
         lastBurstIndex: -1,
         lastSwaraIndex: -1,
         photoBurst: false,
@@ -420,19 +523,22 @@ window.App = window.App || {};
             }
         },
 
-        markComplete() {
+        markComplete(time) {
             this.phase = PHASE.COMPLETE;
+            if (this.burstTime < 0) this.burstTime = time;
         },
 
         reset() {
             this.startTime = -1;
             if (!this.isComplete) {
+                this.phase = PHASE.IDLE;
                 this.lastBurstIndex = -1;
                 this.lastSwaraIndex = -1;
                 this.photoBurst = false;
                 sparkles.length = 0;
                 App.DualCore.reset();
                 App.Audio.stopRevealSounds();
+                App.Constellations.reset();
             }
         }
     };
@@ -466,7 +572,6 @@ window.App = window.App || {};
         const now = Date.now();
         const rawDt = Math.min(32, now - lastTime);
         const dt = rawDt * C.TIME_SCALE;
-        App.Footer.markInactive();
 
         if (C.DEBUG && _burstFrame > 0 && _burstFrame <= 30) {
             App.dbgw('FRAME[' + _burstFrame + ']: dt=' + rawDt + 'ms gap=' + (now - lastTime) + 'ms particles=' + App.Particles.aliveCount + ' sparkles=' + sparkles.length + ' flash=' + App.Supernova.flash.toFixed(3) + ' orbScale=' + App.Supernova._smoothOrbScale.toFixed(3));
@@ -483,7 +588,22 @@ window.App = window.App || {};
         const progress = (maxScroll > 0 && _experienceStartTime > 0) ? Math.min(1, Math.max(0, currentScroll / maxScroll)) : 0;
         logScrollProgress(progress);
         _scaledTime += (rawDt * 0.001) * C.TIME_SCALE;
+        // Mirrored on App so subsystems (Constellations, etc.) can read the canonical
+        // scaled clock without having to be passed it on every call. Without this,
+        // App._scaledTime is undefined → `undefined >= 0` is false → Constellations
+        // stays in pre-burst mode forever.
+        App._scaledTime = _scaledTime;
         const time = _scaledTime;
+
+        // Footer tick — drives the elapsed-time clock for the stateless state
+        // machine and refreshes the cache that DualCore queries
+        // (isPrimaryDone, isSecondaryStarted) before its own draw runs below.
+        // Once burstTime is set, this ticks every frame regardless of scroll
+        // position, so the state machine never freezes or rewinds.
+        const footerElapsed = State.burstTime >= 0
+            ? Math.max(0, time - State.burstTime - C.PHOTO_FADE_DURATION)
+            : -1;
+        App.Footer.tick(footerElapsed, (rawDt * 0.001) * C.TIME_SCALE);
 
         try {
 
@@ -856,9 +976,8 @@ window.App = window.App || {};
         _m();
 
         // Reveal
-        const footerWasComplete = App.Footer.isComplete();
-        if (revealProgress <= 0) { State.reset(); }
-        if (revealProgress > 0) {
+        if (stateShouldReset(revealProgress, State.isComplete)) { State.reset(); }
+        if (stateShouldEnter(revealProgress)) {
             if (State.startTime < 0) {
                 App.dbg('MILESTONE: reveal started, phase=' + State.phaseName);
                 State.enter(time, formationTime);
@@ -882,15 +1001,37 @@ window.App = window.App || {};
             const letterPositions = cachedLetterPositions;
 
             // Timed swara sequence: Sa Re Ga Ma Pa Dha Ni Sa' spread across formation
-            if (revealElapsed > 0 && revealElapsed < formationTime) {
-                const swaraInterval = formationTime / 8;
-                const swaraIdx = Math.floor(revealElapsed / swaraInterval);
-                if (swaraIdx < 8 && swaraIdx > State.lastSwaraIndex) {
+            // Chime dispatch: schedule-driven per spec §6.
+            // Chimes 1-5 (Sa-Pa) sync to constellation appearances; chimes 6-8 (Dha,Ni,Sa') fire during compression.
+            const chimeSchedule = (function() {
+                const active = C.CONSTELLATIONS.CHIME_SCHEDULE_ACTIVE;
+                if (active === 'ACCEL') return C.CONSTELLATIONS.CHIME_SCHEDULE_ACCEL;
+                return C.CONSTELLATIONS.CHIME_SCHEDULE_STEADY;
+            })();
+            if (revealElapsed >= 0) {
+                const swaraIdx = computeChimeIndex(revealElapsed, chimeSchedule);
+                if (swaraIdx >= 0 && swaraIdx > State.lastSwaraIndex) {
                     State.lastSwaraIndex = swaraIdx;
                     App.dbg('SWARA: ' + ['Sa','Re','Ga','Ma','Pa','Dha','Ni','Sa\''][swaraIdx] + ' (' + swaraIdx + ')');
                     App.Audio.playLetterChime(swaraIdx);
                 }
             }
+
+            // Constellation rendering — replaces the old letter formation visual during 0→13.5s.
+            // App.constellationCenterY is the y where letters render, so the dot→letter morph aligns.
+            // App.constellationCenterX + spreadX let the constellation module track horizontal letter
+            // spread (formation spreads letters outward; compression converges them) — same formula
+            // letter rendering uses below, so constellations sit exactly where letters will appear.
+            App.constellationCenterY = belowY + offsetY;
+            App.constellationCenterX = cx;
+            App.constellationSpreadX = spreadX;
+            App.Constellations.draw(
+                ctx,
+                revealProgress,
+                revealElapsed,  // formation elapsed (seconds since State.startTime)
+                null,
+                null
+            );
 
             if (revealElapsed < formationTime && letterPositions) {
                 const activeIndex = Math.min(letters.length - 1, Math.floor(revealElapsed / letterDuration));
@@ -898,12 +1039,14 @@ window.App = window.App || {};
                 const targetX = cx + (letterPositions[activeIndex].x - cx) * spreadX;
                 const targetY = belowY + offsetY;
 
-                ctx.font = `${fontSize * C.FONT_HERO}px Nistha, Georgia, serif`;
-                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
-                for (let i = 0; i < activeIndex; i++) {
-                    const lx = cx + (letterPositions[i].x - cx) * spreadX;
-                    drawGlowText(letters[i], lx, belowY + offsetY, textP);
+                if (State.photoBurst) {
+                    ctx.font = `${fontSize * C.FONT_HERO}px Nistha, Georgia, serif`;
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
+                    for (let i = 0; i < activeIndex; i++) {
+                        const lx = cx + (letterPositions[i].x - cx) * spreadX;
+                        drawGlowText(letters[i], lx, belowY + offsetY, textP);
+                    }
                 }
 
                 const swarmPhase = Math.min(1, letterProgress / C.LETTER_SWARM_PHASE_END);
@@ -923,9 +1066,11 @@ window.App = window.App || {};
                 if (materializePhase > 0) {
                     const mAlpha = textP * easeOutQuint(materializePhase);
                     const popScale = 1 + C.LETTER_POP_SCALE * Math.sin(materializePhase * Math.PI);
-                    ctx.font = `${fontSize * C.FONT_HERO * popScale}px Nistha, Georgia, serif`;
-                    ctx.fillStyle = `rgba(255, 248, 230, ${mAlpha})`;
-                    drawGlowText(letters[activeIndex], targetX, belowY + offsetY, mAlpha);
+                    if (State.photoBurst) {
+                        ctx.font = `${fontSize * C.FONT_HERO * popScale}px Nistha, Georgia, serif`;
+                        ctx.fillStyle = `rgba(255, 248, 230, ${mAlpha})`;
+                        drawGlowText(letters[activeIndex], targetX, belowY + offsetY, mAlpha);
+                    }
 
                     if (materializePhase > C.LETTER_BURST_TRIGGER_PHASE && activeIndex > State.lastBurstIndex) {
                         State.lastBurstIndex = activeIndex;
@@ -946,13 +1091,7 @@ window.App = window.App || {};
             if (_r) _r.push(performance.now());
 
             if (revealElapsed >= formationTime && !State.photoBurst && letterPositions) {
-                ctx.font = `${fontSize * C.FONT_HERO}px Nistha, Georgia, serif`;
-                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                ctx.fillStyle = `rgba(255, 248, 230, ${textP})`;
-                for (let i = 0; i < letters.length; i++) {
-                    const lx = cx + (letterPositions[i].x - cx) * spreadX;
-                    drawGlowText(letters[i], lx, belowY + offsetY, textP * glowPulse);
-                }
+                // letter glyph draws suppressed pre-burst
             } else if (State.photoBurst) {
                 const fonts = C.CYCLE_FONTS;
                 const holdDuration = C.FONT_HOLD_DURATION;
@@ -1012,7 +1151,7 @@ window.App = window.App || {};
             if (photoP > 0 && babyImg.complete) {
                 if (!State.photoBurst) {
                     State.photoBurst = true;
-                    State.markComplete();
+                    State.markComplete(time);
                     if (C.DEBUG) _burstFrame = 1;
                     if (C.DEBUG) {
                         const _b0 = performance.now();
@@ -1065,10 +1204,9 @@ window.App = window.App || {};
                 }
             }
 
-            // Footer
-            if (!App.Footer.isComplete() && (photoP >= 1 || App.Footer.isPrimaryDone())) {
-                App.Footer.draw(ctx, time, textP, fontSize, cx, H);
-            }
+            // Footer is drawn outside the reveal block — see post-block path
+            // below. The state machine ticks every frame via App.Footer.tick()
+            // anchored on State.burstTime, so it advances regardless of scroll.
             const _re = C.DEBUG ? performance.now() : 0;
             if (_r) _r.push(_re);
 
@@ -1086,8 +1224,10 @@ window.App = window.App || {};
             }
         }
 
-        // Footer: persistent once reveal milestone is reached
-        if (State.isComplete && (footerWasComplete || !(revealProgress > 0))) {
+        // Footer: drawn every frame post-burst at full intensity. State
+        // machine is driven by State.burstTime via Footer.tick() at the top
+        // of the draw loop, so scroll-up never freezes or rewinds it.
+        if (State.isComplete) {
             App.Footer.draw(ctx, time, 1, fontSize, cx, H);
         }
 

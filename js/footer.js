@@ -10,12 +10,11 @@ App.Footer = (function() {
     };
 
     const TIMING = {
-        primaryDelay: 3.0,
-        primaryFadeDuration: 1.5,
-        shiftDelay: 4.5,
+        primaryDelay: 2.0,
+        primaryFadeDuration: 1.0,
+        shiftDelay: 3.5,
         shiftDuration: 1.5,
-        revealDuration: 2.0,
-        envelopeDuration: 0.8,
+        revealDuration: 1.0,
     };
 
     const SEGMENTS = {
@@ -27,67 +26,65 @@ App.Footer = (function() {
         vinod: '& Vinod',
     };
 
-    let state = STATE.HIDDEN;
-    let stateTimer = 0;
-    let entryTimer = 0;
-    let lastTime = -1;
-    let activeThisFrame = false;
-    let activeLastFrame = false;
+    // Glow accumulators are the only stateful pieces left. They tick from the
+    // moment `settled` becomes true. The state machine itself is fully derived
+    // from `elapsed` (footer-clock time, anchored at burst + photo fade), so
+    // scroll-up never freezes or rewinds it — `_lastElapsed` is just a cache
+    // for query APIs (isPrimaryDone, etc.) consumed by DualCore between ticks.
+    let _lastElapsed = -1;
     let shrutiGlowP = 0;
     let vinodGlowP = 0;
 
     let widths = null;
     let heartCanvas = null;
 
-    function advance(newState) {
-        if (newState > state) {
-            state = newState;
-            stateTimer = 0;
+    // Pure function: state at a given elapsed time. No mutation, no recursion.
+    function deriveProgress(elapsed) {
+        if (elapsed < 0) {
+            return { state: STATE.HIDDEN, primaryP: 0, shiftP: 0, revealP: 0, shrutiP: 0, vinodP: 0, settled: false };
         }
+
+        if (elapsed < TIMING.primaryDelay) {
+            return { state: STATE.HIDDEN, primaryP: 0, shiftP: 0, revealP: 0, shrutiP: 0, vinodP: 0, settled: false };
+        }
+
+        let t = elapsed - TIMING.primaryDelay;
+        if (t < TIMING.primaryFadeDuration) {
+            const primaryP = App.easeOutQuint(t / TIMING.primaryFadeDuration);
+            const shrutiP = primaryP > 0.7 ? Math.min(1, (primaryP - 0.7) / 0.3) : 0;
+            return { state: STATE.REVEALING_PRIMARY, primaryP, shiftP: 0, revealP: 0, shrutiP, vinodP: 0, settled: false };
+        }
+
+        t -= TIMING.primaryFadeDuration;
+        if (t < TIMING.shiftDelay) {
+            return { state: STATE.PRIMARY_VISIBLE, primaryP: 1, shiftP: 0, revealP: 0, shrutiP: 1, vinodP: 0, settled: false };
+        }
+
+        t -= TIMING.shiftDelay;
+        const shiftEnd = Math.max(TIMING.shiftDuration, TIMING.revealDuration);
+        if (t < shiftEnd) {
+            const shiftP = App.easeOutQuint(Math.min(1, t / TIMING.shiftDuration));
+            const revealRaw = Math.min(1, t / TIMING.revealDuration);
+            const revealP = revealRaw * revealRaw * (3 - 2 * revealRaw);
+            const DESCENT = 0.4;
+            const EMANATION = 1.0;
+            const vinodP = Math.min(1, Math.max(0, (t - DESCENT) / EMANATION));
+            return { state: STATE.SHIFTING, primaryP: 1, shiftP, revealP, shrutiP: 1, vinodP, settled: false };
+        }
+
+        return { state: STATE.COMPLETE, primaryP: 1, shiftP: 1, revealP: 1, shrutiP: 1, vinodP: 1, settled: true };
     }
 
-    function computeProgress() {
-        switch (state) {
-            case STATE.HIDDEN: {
-                if (stateTimer > TIMING.primaryDelay) {
-                    advance(STATE.REVEALING_PRIMARY);
-                    return computeProgress();
-                }
-                return { primaryP: 0, shiftP: 0, revealP: 0, shrutiP: 0, vinodP: 0, settled: false };
-            }
-            case STATE.REVEALING_PRIMARY: {
-                const primaryP = App.easeOutQuint(Math.min(1, stateTimer / TIMING.primaryFadeDuration));
-                const shrutiP = primaryP > 0.7 ? Math.min(1, (primaryP - 0.7) / 0.3) : 0;
-                if (primaryP >= 1) {
-                    advance(STATE.PRIMARY_VISIBLE);
-                    return computeProgress();
-                }
-                return { primaryP, shiftP: 0, revealP: 0, shrutiP, vinodP: 0, settled: false };
-            }
-            case STATE.PRIMARY_VISIBLE: {
-                if (stateTimer > TIMING.shiftDelay) {
-                    advance(STATE.SHIFTING);
-                    return computeProgress();
-                }
-                return { primaryP: 1, shiftP: 0, revealP: 0, shrutiP: 1, vinodP: 0, settled: false };
-            }
-            case STATE.SHIFTING: {
-                const shiftP = App.easeOutQuint(Math.min(1, stateTimer / TIMING.shiftDuration));
-                const revealRaw = Math.min(1, stateTimer / TIMING.revealDuration);
-                const revealP = revealRaw * revealRaw * (3 - 2 * revealRaw);
-                const DESCENT = 0.4;
-                const EMANATION = 1.0;
-                const vinodP = Math.min(1, Math.max(0, (stateTimer - DESCENT) / EMANATION));
-                if (shiftP >= 1 && revealRaw >= 1) {
-                    advance(STATE.COMPLETE);
-                    return computeProgress();
-                }
-                return { primaryP: 1, shiftP, revealP, shrutiP: 1, vinodP, settled: false };
-            }
-            case STATE.COMPLETE:
-                return { primaryP: 1, shiftP: 1, revealP: 1, shrutiP: 1, vinodP: 1, settled: true };
-            default:
-                return { primaryP: 1, shiftP: 1, revealP: 1, shrutiP: 1, vinodP: 1, settled: true };
+    // Called every frame post-burst from the main loop. Refreshes the cache
+    // for query APIs and advances the persistent glow once settled. Must run
+    // before DualCore.draw, which queries isPrimaryDone()/isSecondaryStarted().
+    function tick(elapsed, dt) {
+        _lastElapsed = elapsed;
+        if (elapsed < 0) return;
+        const s = deriveProgress(elapsed);
+        if (s.settled) {
+            if (shrutiGlowP < 1) shrutiGlowP = Math.min(1, shrutiGlowP + dt * 0.12);
+            if (vinodGlowP < 1) vinodGlowP = Math.min(1, vinodGlowP + dt * 0.12);
         }
     }
 
@@ -152,39 +149,10 @@ App.Footer = (function() {
 
     window.addEventListener('resize', invalidate);
 
-    function draw(ctx, time, textP, fontSize, cx, H) {
-        // Detect re-entry (first call after a frame where draw wasn't called)
-        const isReentry = !activeLastFrame;
-        activeThisFrame = true;
-
-        // Compute dt (clamped to prevent tab-resume state jumps)
-        const rawDt = (lastTime < 0 || isReentry) ? 0 : time - lastTime;
-        const dt = Math.min(rawDt, 0.1);
-        lastTime = time;
-
-        // On re-entry: reset timers for current state (restart animation)
-        if (isReentry && state < STATE.COMPLETE) {
-            stateTimer = 0;
-            entryTimer = 0;
-        }
-
-        // Advance timers
-        stateTimer += dt;
-        entryTimer += dt;
-
-        // For COMPLETE state with persistent render, skip timer logic
-        if (state === STATE.COMPLETE) {
-            entryTimer = 999;
-        }
-
-        // Compute progress from state machine
-        const { primaryP, shiftP, revealP, shrutiP, vinodP, settled } = computeProgress();
-
-        // Nothing to render if primary hasn't started
+    function draw(ctx, time, intensity, fontSize, cx, H) {
+        if (_lastElapsed < 0) return;
+        const { primaryP, shiftP, revealP, shrutiP, vinodP, settled } = deriveProgress(_lastElapsed);
         if (primaryP <= 0) return;
-
-        // Envelope: smooth fade-in on re-entry
-        const envelope = state === STATE.COMPLETE ? textP : Math.min(1, entryTimer / TIMING.envelopeDuration) * textP;
 
         const DPR = App.DPR;
         const footerSize = fontSize * App.Config.FONT_CAPTION;
@@ -200,14 +168,14 @@ App.Footer = (function() {
         let xPos = Math.round(cx - totalW / 2);
 
         // "Made"
-        ctx.globalAlpha = primaryP * envelope * 0.6;
+        ctx.globalAlpha = primaryP * intensity * 0.6;
         ctx.fillStyle = 'rgba(255, 240, 210, 1)';
         ctx.fillText(SEGMENTS.made, xPos, footerY);
         xPos += w.made;
 
         // "with ❣️ "
         if (revealP > 0) {
-            ctx.globalAlpha = revealP * primaryP * envelope * 0.6;
+            ctx.globalAlpha = revealP * primaryP * intensity * 0.6;
             ctx.fillStyle = 'rgba(255, 220, 200, 1)';
             ctx.fillText(SEGMENTS.withText, xPos, footerY);
 
@@ -218,7 +186,7 @@ App.Footer = (function() {
             const hW = w.heart * hScale;
             const hH = heartCanvas.height * hScale;
             const hCenterX = heartX + w.heart / 2;
-            ctx.globalAlpha = revealP * primaryP * envelope * (0.6 + heartbeat);
+            ctx.globalAlpha = revealP * primaryP * intensity * (0.6 + heartbeat);
             ctx.shadowColor = `rgba(255, 100, 100, ${0.6 + heartbeat})`;
             ctx.shadowBlur = (8 + heartbeat * 12) * DPR;
             ctx.drawImage(heartCanvas, hCenterX - hW / 2, footerY - hH / 2, hW, hH);
@@ -228,50 +196,35 @@ App.Footer = (function() {
 
         // "in California by " (uniform fade) + "Shruti" (emanating from 'i')
         ctx.fillStyle = 'rgba(255, 240, 210, 1)';
-        ctx.globalAlpha = primaryP * envelope * 0.6;
+        ctx.globalAlpha = primaryP * intensity * 0.6;
         ctx.fillText('in California by ', xPos, footerY);
         const shrutiStartX = xPos + w._prefix;
-
-        // Persistent glow behind names (starts only after everything is settled)
-        if (settled && shrutiGlowP < 1) {
-            shrutiGlowP = Math.min(1, shrutiGlowP + dt * 0.12);
-        }
 
         if (shrutiP > 0) {
             const eased = shrutiGlowP * shrutiGlowP;
             if (eased > 0) {
-                ctx.shadowColor = `rgba(255, 180, 80, ${eased * envelope * 0.7})`;
+                ctx.shadowColor = `rgba(255, 180, 80, ${eased * intensity * 0.7})`;
                 ctx.shadowBlur = footerSize * 0.8 * eased;
             }
             ctx.fillStyle = 'rgba(255, 240, 210, 1)';
-            drawEmanating(ctx, w._shrutiChars, w._shrutiIIndex, shrutiStartX, footerY, shrutiP, envelope * 0.6);
+            drawEmanating(ctx, w._shrutiChars, w._shrutiIIndex, shrutiStartX, footerY, shrutiP, intensity * 0.6);
             ctx.shadowBlur = 0;
         }
         xPos += w.main;
-
-        if (settled && vinodGlowP < 1) {
-            vinodGlowP = Math.min(1, vinodGlowP + dt * 0.12);
-        }
 
         // "& Vinod" (emanating from 'i')
         if (vinodP > 0) {
             const eased = vinodGlowP * vinodGlowP;
             if (eased > 0) {
-                ctx.shadowColor = `rgba(150, 180, 255, ${eased * envelope * 0.7})`;
+                ctx.shadowColor = `rgba(150, 180, 255, ${eased * intensity * 0.7})`;
                 ctx.shadowBlur = footerSize * 0.8 * eased;
             }
             ctx.fillStyle = 'rgba(255, 220, 200, 1)';
-            drawEmanating(ctx, w._vinodChars, w._vinodIIndex, xPos, footerY, vinodP, primaryP * envelope * 0.6);
+            drawEmanating(ctx, w._vinodChars, w._vinodIIndex, xPos, footerY, vinodP, primaryP * intensity * 0.6);
             ctx.shadowBlur = 0;
         }
 
         ctx.globalAlpha = 1;
-    }
-
-    // Called once per frame from main loop — bookmarks whether draw was called last frame
-    function markInactive() {
-        activeLastFrame = activeThisFrame;
-        activeThisFrame = false;
     }
 
     function getTargets(fontSize, cx, H) {
@@ -313,10 +266,25 @@ App.Footer = (function() {
         };
     }
 
-    function isPrimaryStarting() { return state >= STATE.REVEALING_PRIMARY && stateTimer > TIMING.primaryFadeDuration * 0.5; }
-    function isPrimaryDone() { return state >= STATE.PRIMARY_VISIBLE; }
-    function isSecondaryStarted() { return state >= STATE.SHIFTING; }
-    function isComplete() { return state >= STATE.COMPLETE; }
+    function isPrimaryStarting() {
+        if (_lastElapsed < 0) return false;
+        const s = deriveProgress(_lastElapsed);
+        // Half-way through primary fade or later — kept compatible with the
+        // previous semantic (state >= REVEALING_PRIMARY && stateTimer > half).
+        return s.state >= STATE.REVEALING_PRIMARY && s.primaryP > 0.5;
+    }
+    function isPrimaryDone() {
+        if (_lastElapsed < 0) return false;
+        return deriveProgress(_lastElapsed).state >= STATE.PRIMARY_VISIBLE;
+    }
+    function isSecondaryStarted() {
+        if (_lastElapsed < 0) return false;
+        return deriveProgress(_lastElapsed).state >= STATE.SHIFTING;
+    }
+    function isComplete() {
+        if (_lastElapsed < 0) return false;
+        return deriveProgress(_lastElapsed).state >= STATE.COMPLETE;
+    }
 
-    return { draw, markInactive, getTargets, isPrimaryStarting, isPrimaryDone, isSecondaryStarted, isComplete, TIMING };
+    return { tick, draw, getTargets, isPrimaryStarting, isPrimaryDone, isSecondaryStarted, isComplete, TIMING };
 })();

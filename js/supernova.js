@@ -82,6 +82,8 @@ App.Supernova = {
 
         // Clear vortex particles to free the pool — they're invisible post-flash anyway
         App.Particles.clearAll();
+        // Trigger the constellation dot scatter→converge animation.
+        App.Constellations.triggerBurst();
 
         const burstCount = C.BURST_PARTICLE_COUNT_MIN + Math.floor(Math.random() * C.BURST_PARTICLE_COUNT_RANGE);
         for (let sp = 0; sp < burstCount; sp++) {

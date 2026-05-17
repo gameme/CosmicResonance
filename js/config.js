@@ -10,6 +10,8 @@ App.Config = {
     ORB_GROW:         [0.3, 0.75],   // orb expands to full size
     STRINGS_FADE:     [0.7, 0.85],   // strings fade out as orb dominates
     REVEAL:           [0.85, 0.95],  // name reveal + supernova trigger zone
+    REVEAL_COMMIT_THRESHOLD: 0.85,    // §5.6 — revealProgress must reach this for State.enter()
+    REVEAL_RESET_THRESHOLD: 0.70,     // §5.6 — pre-complete: drop below to trigger State.reset()
 
     // --- Particles ---
     MAX_PARTICLES:       800,   // pool cap; higher = denser but heavier on GPU
@@ -253,4 +255,55 @@ App.Config = {
     // --- Blast ---
     // Lower = smoother/slower orb expansion; higher = snappier. Range: 0.1–0.5.
     BLAST_ORB_LERP: 0.22,
+
+    CONSTELLATIONS: {
+        // Formation-phase tunables
+        SIZE_SCALE: 1.3,                          // overall constellation size multiplier; Pa (widest, ±9.5 units) keeps a visible gap from Ma (±8 units) up to ~1.3
+        TWINKLE_FREQ_RANGE: [0.15, 0.40],         // Hz — slower than original [0.3, 0.7] for relaxed feel
+        TWINKLE_ALPHA_RANGE: [0.55, 1.0],         // brightness range during twinkle
+        TWINKLE_COMPRESSION_MUL: 1.5,             // freqMul = 1 + compFraction * 1.5 (1× → 2.5×)
+        DOT_RADIUS_FACTOR: 0.5,                   // multiplier on size scalar to compute dot pixel radius
+        LINE_DRAW_DURATION: 400,                  // ms — progressive line tween
+        LINE_DRAW_DELAY: 250,                     // ms after anchor settles
+        ANCHOR_FADE_IN: 250,                      // ms
+        FILLER_FADE_IN: 400,                      // ms
+        COMPRESSION_LINE_ALPHA_END: 0.9,
+        COMPRESSION_LINE_WIDTH_END: 1.2,
+        // Star rendering — layered halo + diffraction spikes + colored core + white-hot center
+        HALO_RADIUS_MUL: 4.0,                     // halo extends 4× core radius
+        WHITE_CORE_FACTOR: 0.4,                   // white-hot center is 40% of core radius
+        // Diffraction-spike rays — six per star, pulsing independently
+        RAY_COUNT: 6,
+        RAY_FREQ_RANGE: [0.15, 0.45],             // Hz per ray
+        RAY_COMPRESSION_MUL: 0.6,                 // gentle compression boost
+        RAY_AMP_RANGE: [0.55, 1.40],              // per-ray length variation (lopsided star feel)
+        RAY_LENGTH_MUL: 4.5,                      // baseLength = baseR × 4.5
+        RAY_WIDTH_FACTOR: 0.25,                   // ray base width = baseR × 0.25
+        RAY_ROTATION_SPEED: 0.10,                 // rad/sec slow rotation of whole pattern
+        // Occasional flare events
+        FLARE_PERIOD_BASE: 4.5,                   // sec at compFraction=0
+        FLARE_PERIOD_REDUCTION: 2.0,              // shrinks toward (base - reduction) at compFraction=1
+        FLARE_DURATION: 0.4,                      // sec each flare lasts
+        FLARE_BRIGHTNESS_BOOST: 0.35,
+        FLARE_SIZE_BOOST: 0.20,
+        // Sonar rings — every anchor emits expanding rings during compression
+        SONAR_RING_COUNT: 3,
+        SONAR_RING_PERIOD_BASE: 1.8,              // sec at compFraction=0
+        SONAR_RING_PERIOD_REDUCTION: 1.0,         // shrinks toward (base - reduction) at compFraction=1
+        SONAR_RING_MAX_R_MUL: 28,                 // ring max radius = unitToPx × 28
+        SONAR_RING_MIN_R_MUL: 4,                  // ring min radius = unitToPx × 4
+        // Labels (Sa · 1 etc.)
+        LABEL_DELAY_AFTER_LINES: 150,             // ms — label fades in after lines start drawing
+        LABEL_FADE_IN: 200,
+        LABEL_BASE_ALPHA: 0.55,
+        LABEL_FONT: '"SF Mono", "Menlo", monospace',
+        LABEL_SIZE_BASE: 10,                      // px at DPR=1
+        LABEL_LETTER_SPACING: 1,
+        LABEL_COMPRESSION_PULSE_AMP: 0.05,
+        LABEL_BURST_FADE_OUT: 80,
+        // Audio chime schedule (seconds from formation start)
+        CHIME_SCHEDULE_STEADY: [0, 1.5, 3.0, 4.5, 6.0, 7.5, 9.0, 10.5],
+        CHIME_SCHEDULE_ACCEL:  [0, 1.5, 3.0, 4.5, 6.0, 8.0, 9.5, 10.5],
+        CHIME_SCHEDULE_ACTIVE: 'STEADY',          // 'STEADY' | 'ACCEL' — A/B during impl
+    },
 };
